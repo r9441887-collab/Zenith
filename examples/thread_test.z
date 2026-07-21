@@ -1,0 +1,27 @@
+app console
+
+@import("libs.dll::thread")
+
+extern func threadCreate(fn: int, arg: int) -> int
+extern func threadJoin(handle: int) -> int
+extern func threadSleepMs(ms: int) -> void
+extern func threadGetId() -> int
+
+func worker(arg: int) -> int
+    print("Hello from thread!")
+    threadSleepMs(500)
+    print("Thread done!")
+    return 42
+end
+
+func main() -> int
+    print("Main thread starting")
+
+    var handle: int = threadCreate(worker, 0)
+    print("Worker spawned")
+
+    threadJoin(handle)
+    print("Thread joined")
+
+    return 0
+end

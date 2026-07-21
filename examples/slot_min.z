@@ -1,0 +1,6 @@
+app console
+
+func main() -> int
+    var s: int = slotCreate(4, 8)
+    return 0
+end

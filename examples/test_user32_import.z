@@ -1,0 +1,11 @@
+app console
+
+@import("user32.dll") GetSystemMetrics
+
+extern func GetSystemMetrics(x: int) -> int
+
+func main()
+    var r: int = GetSystemMetrics(0)
+    printInt(r)
+    print("\n")
+end

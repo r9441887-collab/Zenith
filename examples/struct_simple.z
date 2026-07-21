@@ -1,0 +1,11 @@
+app console
+struct Point
+    var x: float
+    var y: float
+end
+
+func main() -> int
+    var p: Point
+    p.x = 1.0
+    return 1
+end

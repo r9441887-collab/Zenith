@@ -1,0 +1,6 @@
+app console
+func main() -> int
+    var x: int = 5
+    var y: int = -x
+    return y
+end

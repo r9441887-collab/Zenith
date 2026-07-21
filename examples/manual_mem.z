@@ -1,0 +1,10 @@
+app console
+func main() -> int
+    var p: int = alloc(16)
+    var q: int = alloc(32)
+    if p != 0
+        free(p)
+        return 42
+    end
+    return 0
+end

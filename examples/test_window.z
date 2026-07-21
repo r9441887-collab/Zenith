@@ -1,0 +1,6 @@
+app gui
+
+func main()
+    createWindow(320, 240, "Win")
+    closeWindow()
+end

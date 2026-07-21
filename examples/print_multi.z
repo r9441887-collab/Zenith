@@ -1,0 +1,8 @@
+app console
+func main() -> int
+    print("Hello from Zenith!")
+    print(42)
+    var x: int = 12345
+    print(x)
+    return 0
+end

@@ -1,0 +1,9 @@
+app console
+func add(a: int, b: int) -> int
+    return a + b
+end
+
+func main() -> int
+    var result: int = add(5, 3)
+    return result
+end

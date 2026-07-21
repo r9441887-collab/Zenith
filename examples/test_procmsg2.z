@@ -1,0 +1,9 @@
+app gui
+
+func main()
+    createWindow(320, 240, "ProcMsg2")
+    while processMessages() != 0
+        present()
+    end
+    closeWindow()
+end

@@ -1,0 +1,24 @@
+app gui
+
+func fill(x: int, y: int, w: int, h: int, col: int)
+    var cx: int = x
+    while cx < x + w
+        var cy: int = y
+        while cy < y + h
+            drawPixel(cx, cy, col)
+            cy = cy + 1
+        end
+        cx = cx + 1
+    end
+end
+
+func main()
+    createWindow(200, 200, "Test")
+    var x: int = 50
+    while getKey(27) == 0
+        clear(0xFF000000)
+        fill(50, 50, 20, 20, 0xFF00FF00)
+        present()
+    end
+    closeWindow()
+end

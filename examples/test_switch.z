@@ -1,0 +1,50 @@
+app gui
+
+func fill(x: int, y: int, w: int, h: int, col: int)
+    var cx: int = x
+    while cx < x + w
+        var cy: int = y
+        while cy < y + h
+            drawPixel(cx, cy, col)
+            cy = cy + 1
+        end
+        cx = cx + 1
+    end
+end
+
+func main()
+    createWindow(400, 300, "Switcher")
+
+    var bg: int = 0xFF1A1A2E
+    var green: int = 0xFF00FF66
+    var dim: int = 0xFF334455
+    var active: int = 1
+    var wasPressed: int = 0
+
+    while getKey(27) == 0
+        clear(bg)
+
+        if active == 1
+            fill(30, 50, 160, 190, green)
+        else
+            fill(30, 50, 160, 190, dim)
+        end
+
+        if getKey(123) == 1
+            if wasPressed == 0
+                if active == 1
+                    active = 2
+                else
+                    active = 1
+                end
+                wasPressed = 1
+            end
+        else
+            wasPressed = 0
+        end
+
+        present()
+    end
+
+    closeWindow()
+end

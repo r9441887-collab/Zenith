@@ -1,0 +1,13 @@
+app console
+
+@import("kernel32.dll") GetModuleHandleA
+@import("user32.dll") GetMessageA
+
+extern func GetModuleHandleA(x: int) -> int
+extern func GetMessageA(x: int) -> int
+
+func main()
+    var h: int = GetModuleHandleA(0)
+    var m: int = GetMessageA(0)
+    print("hello\n")
+end

@@ -1,0 +1,12 @@
+app gui
+
+func main()
+    createWindow(320, 240, "Min Test")
+    clear(0xFFFF0000)
+    present()
+    while processMessages() != 0
+        clear(0xFFFF0000)
+        present()
+    end
+    closeWindow()
+end

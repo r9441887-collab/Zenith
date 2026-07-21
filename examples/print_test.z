@@ -1,0 +1,5 @@
+app console
+func main() -> int
+    print("Hello from Zenith!")
+    return 0
+end

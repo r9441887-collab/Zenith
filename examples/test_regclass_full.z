@@ -1,0 +1,15 @@
+app gui
+
+@import("kernel32.dll") GetModuleHandleA
+@import("user32.dll") RegisterClassExA
+
+extern func GetModuleHandleA(x: int) -> int
+extern func RegisterClassExA(x: int) -> int
+
+func main()
+    // Just test the class registration
+    var h: int = GetModuleHandleA(0)
+    
+    // Build WNDCLASSEXA in global variables - just test if RegisterClassExA is callable
+    var r: int = RegisterClassExA(0)
+end

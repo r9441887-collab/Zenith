@@ -1,0 +1,61 @@
+app gui
+
+func fill(x: int, y: int, w: int, h: int, col: int)
+    var cx: int = x
+    while cx < x + w
+        var cy: int = y
+        while cy < y + h
+            drawPixel(cx, cy, col)
+            cy = cy + 1
+        end
+        cx = cx + 1
+    end
+end
+
+func main()
+    createWindow(320, 240, "Button Demo")
+
+    var bg: int = 0xFF606060
+    var blue: int = 0xFF3366CC
+    var green: int = 0xFF33AA33
+    var white: int = 0xFFFFFFFF
+
+    var bx: int = 85
+    var by: int = 80
+    var bw: int = 150
+    var bh: int = 60
+
+    var pressed: int = 0
+    var col: int = blue
+
+    while getKey(27) == 0
+        clear(bg)
+
+        if getKey(32)
+            pressed = 1
+            col = green
+        else
+            if pressed == 1
+                pressed = 2
+            end
+            if pressed == 2
+                col = green
+            else
+                col = blue
+            end
+        end
+
+        fill(bx, by, bw, bh, col)
+        fill(bx, by, bw, 2, white)
+
+        # Big simple ">" arrow as button face
+        fill(bx + 50, by + 10, 6, 40, white)
+        fill(bx + 56, by + 16, 6, 28, white)
+        fill(bx + 62, by + 22, 6, 16, white)
+        fill(bx + 68, by + 26, 6, 8, white)
+
+        present()
+    end
+
+    closeWindow()
+end

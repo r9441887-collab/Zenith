@@ -1,0 +1,6 @@
+app console
+func main() -> int
+    var a: float = 3.5f
+    var b: float = a
+    return 1
+end

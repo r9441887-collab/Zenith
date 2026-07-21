@@ -1,0 +1,12 @@
+app gui
+
+func main()
+    createWindow(200, 200, "Test")
+    var x: int = 50
+    while getKey(27) == 0
+        clear(0xFF000000)
+        drawPixel(x, x, 0xFF00FF00)
+        present()
+    end
+    closeWindow()
+end

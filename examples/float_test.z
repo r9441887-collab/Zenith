@@ -1,0 +1,10 @@
+app console
+func main() -> int
+    var a: float = 3.5f
+    var b: float = 2.0
+    var c: float = a + b
+    if c > 5.0
+        return 1
+    end
+    return 0
+end

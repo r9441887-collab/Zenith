@@ -1,0 +1,4 @@
+app console
+func main() -> int
+    return alloc(16)
+end

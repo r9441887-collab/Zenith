@@ -1,0 +1,42 @@
+app console
+
+func main() -> int
+    var s: int = slotCreate(4, 8)
+
+    var h1: int = slotSpawn(s)
+    var h2: int = slotSpawn(s)
+    var h3: int = slotSpawn(s)
+
+    print(slotCount(s))
+
+    slotSetI64(s, h1, 0, 42)
+    slotSetI64(s, h2, 0, 99)
+    slotSetI64(s, h3, 0, 7)
+
+    print(slotGetI64(s, h1, 0))
+    print(slotGetI64(s, h2, 0))
+    print(slotGetI64(s, h3, 0))
+
+    slotKill(s, h2)
+    print(slotCount(s))
+
+    var h4: int = slotSpawn(s)
+    print(slotCount(s))
+
+    slotSetI64(s, h4, 0, 55)
+    print(slotGetI64(s, h4, 0))
+
+    print(slotGetI64(s, h1, 0))
+    print(slotGetI64(s, h3, 0))
+
+    slotReset(s)
+    print(slotCount(s))
+
+    var h5: int = slotSpawn(s)
+    slotSetI64(s, h5, 0, 123)
+    print(slotGetI64(s, h5, 0))
+
+    slotDestroy(s)
+    print(999)
+    return 0
+end

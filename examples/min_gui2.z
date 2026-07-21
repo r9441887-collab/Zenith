@@ -1,0 +1,9 @@
+app gui
+
+@import("user32.dll") RegisterClassExA
+
+extern func RegisterClassExA(x: int) -> int
+
+func main()
+    RegisterClassExA(0)
+end

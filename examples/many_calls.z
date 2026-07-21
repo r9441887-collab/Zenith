@@ -1,0 +1,40 @@
+app console
+func add(a: int, b: int) -> int
+    return a + b
+end
+
+func main() -> int
+    var r1: int = add(1, 101)
+    var r2: int = add(2, 102)
+    var r3: int = add(3, 103)
+    var r4: int = add(4, 104)
+    var r5: int = add(5, 105)
+    var r6: int = add(6, 106)
+    var r7: int = add(7, 107)
+    var r8: int = add(8, 108)
+    var r9: int = add(9, 109)
+    var r10: int = add(10, 110)
+    var r11: int = add(11, 111)
+    var r12: int = add(12, 112)
+    var r13: int = add(13, 113)
+    var r14: int = add(14, 114)
+    var r15: int = add(15, 115)
+    var r16: int = add(16, 116)
+    print(r1)
+    print(r2)
+    print(r3)
+    print(r4)
+    print(r5)
+    print(r6)
+    print(r7)
+    print(r8)
+    print(r9)
+    print(r10)
+    print(r11)
+    print(r12)
+    print(r13)
+    print(r14)
+    print(r15)
+    print(r16)
+    return 0
+end

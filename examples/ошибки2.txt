@@ -1,0 +1,52 @@
+Вижу! Вот точные баги которые вызывают краш:
+
+Баг 1 — createWindow не передаёт title:
+
+asm
+
+; createWindow(320, 240, "Button Demo")
+; Вместо "Button Demo" передаёт "ZenithWnd" (имя класса окна)!
+lea  0x107f(%rip),%rax   ; rax = "ZenithWnd" @ 0x2210
+mov  %rax,0x40(%rsp)     ; ← БАГ! Должно быть "Button Demo"
+Баг 2 — fill() портит регистры аргументов (ГЛАВНЫЙ КРАШ):
+
+asm
+
+; fill(bx, by, bw, bh, col)
+mov  -0x28(%rbp), %eax   ; eax = bx
+mov  %eax, %ecx          ; ecx = bx ✅
+mov  -0x30(%rbp), %eax   ; eax = by
+mov  %eax, %ecx          ; ecx = by ❌ ПЕРЕЗАПИСАЛО bx!
+mov  -0x38(%rbp), %eax   ; eax = bw
+mov  %r8d, %ecx          ; ecx = мусор ❌
+mov  -0x40(%rbp), %eax   ; eax = bh
+mov  %r8, %r9            ; r9 = мусор ❌
+; Результат: fill(мусор, мусор, мусор, мусор, col)
+;             → бесконечный цикл → CRASH!
+Баг 3 — present() передаёт HWND в BitBlt:
+
+asm
+
+mov  0x10(%rbx), %rcx    ; rcx = HWND (окно)
+; BitBlt хочет HDC, а не HWND!
+call *BitBlt              ; → ACCESS_VIOLATION
+Вот что нужно исправить в codegen:
+
+C++
+
+// Баг 2 — ГЛАВНЫЙ: fill() с 5 аргументами
+// Проблема: все аргументы пишутся в %ecx вместо rcx/rdx/r8/r9/stack
+void Codegen::emitCall(FunctionDecl* func, vector<Expr*> args) {
+    // Windows x64 calling convention:
+    // arg0 → rcx, arg1 → rdx, arg2 → r8, arg3 → r9
+    // arg4+ → stack
+    // СЕЙЧАС: mov arg0→ecx, mov arg1→ecx (ПЕРЕЗАПИСЬ!)
+    // НАДО:  mov arg0→rcx, mov arg1→rdx, mov arg2→r8, mov arg3→r9
+}
+Это критический баг — без него ни одна функция с >1 аргументом не работает правильно. fill(85, 80, 150, 60, color) получает мусор вместо координат → бесконечный цикл → краш.
+
+
+Файл не выбран
+
+
+

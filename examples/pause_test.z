@@ -1,0 +1,10 @@
+app console
+
+func main() -> int
+    print("Hello!")
+    sleep(2)
+    print("Waited 2 seconds")
+    pause()
+    print("Done!")
+    return 0
+end

@@ -1,0 +1,215 @@
+app gui
+
+@import("libs.dll::thread")
+
+extern func threadCreate(fn: int, arg: int) -> int
+extern func threadJoin(handle: int) -> int
+extern func threadSleepMs(ms: int) -> void
+extern func threadGetId() -> int
+extern func threadEqual(a: int, b: int) -> int
+
+func fillRect(x: int, y: int, w: int, h: int, col: int)
+    var cx: int = x
+    while cx < x + w
+        var cy: int = y
+        while cy < y + h
+            drawPixel(cx, cy, col)
+            cy = cy + 1
+        end
+        cx = cx + 1
+    end
+end
+
+# ── Shared memory layout (via alloc) ──
+# offset  0: playerX
+# offset  8: playerY
+# offset 16: enemyX
+# offset 24: enemyY
+# offset 32: score
+# offset 40: quit flag
+# offset 48: enemy2X
+# offset 56: enemy2Y
+
+# ── AI Thread: chases the player ──
+func aiWorker(shared: int) -> int
+    var ex: int = 350
+    var ey: int = 250
+    poke(shared + 16, ex)
+    poke(shared + 24, ey)
+
+    while peek(shared + 40) == 0
+        var px: int = peek(shared)
+        var py: int = peek(shared + 8)
+
+        if px < ex
+            ex = ex - 1
+        end
+        if px > ex
+            ex = ex + 1
+        end
+        if py < ey
+            ey = ey - 1
+        end
+        if py > ey
+            ey = ey + 1
+        end
+
+        poke(shared + 16, ex)
+        poke(shared + 24, ey)
+        threadSleepMs(30)
+    end
+    return 0
+end
+
+# ── Enemy2 Thread: roams randomly ──
+func roamWorker(shared: int) -> int
+    var rx: int = 50
+    var ry: int = 250
+    var dx: int = 1
+    var dy: int = 1
+    var tick: int = 0
+    poke(shared + 48, rx)
+    poke(shared + 56, ry)
+
+    while peek(shared + 40) == 0
+        tick = tick + 1
+
+        # Bounce off walls
+        if rx < 5
+            dx = 1
+        end
+        if rx > 385
+            dx = -1
+        end
+        if ry < 5
+            dy = 1
+        end
+        if ry > 285
+            dy = -1
+        end
+
+        # Change direction every 40 ticks
+        if tick / 40 * 40 == tick
+            if tick / 120 * 120 == tick
+                dx = 1
+                dy = 1
+            else
+                dx = -1
+                dy = 1
+            end
+        end
+
+        rx = rx + dx
+        ry = ry + dy
+
+        poke(shared + 48, rx)
+        poke(shared + 56, ry)
+        threadSleepMs(20)
+    end
+    return 0
+end
+
+func main() -> int
+    createWindow(400, 300, "Thread Storm - Multithreaded Game")
+
+    var shared: int = alloc(64)
+    var px: int = 195
+    var py: int = 145
+    poke(shared, px)
+    poke(shared + 8, py)
+    poke(shared + 32, 0)
+    poke(shared + 40, 0)
+
+    # Spawn 2 AI threads
+    var ai1: int = threadCreate(aiWorker, shared)
+    var ai2: int = threadCreate(roamWorker, shared)
+
+    while getKey(27) == 0
+        clear(0xFF101018)
+
+        # Player input
+        if getKey(0x57)
+            py = py - 3
+        end
+        if getKey(0x53)
+            py = py + 3
+        end
+        if getKey(0x41)
+            px = px - 3
+        end
+        if getKey(0x44)
+            px = px + 3
+        end
+        if getKey(0x26)
+            py = py - 3
+        end
+        if getKey(0x28)
+            py = py + 3
+        end
+        if getKey(0x25)
+            px = px - 3
+        end
+        if getKey(0x27)
+            px = px + 3
+        end
+
+        poke(shared, px)
+        poke(shared + 8, py)
+
+        # Read enemy positions from shared memory
+        var ex: int = peek(shared + 16)
+        var ey: int = peek(shared + 24)
+        var rx: int = peek(shared + 48)
+        var ry: int = peek(shared + 56)
+        var score: int = peek(shared + 32)
+
+        # Collision with enemy1 (red chaser)
+        if px + 10 > ex
+            if ex + 10 > px
+                if py + 10 > ey
+                    if ey + 10 > py
+                        score = score + 1
+                        poke(shared + 32, score)
+                    end
+                end
+            end
+        end
+
+        # Collision with enemy2 (orange roamer)
+        if px + 10 > rx
+            if rx + 10 > px
+                if py + 10 > ry
+                    if ry + 10 > py
+                        score = score + 1
+                        poke(shared + 32, score)
+                    end
+                end
+            end
+        end
+
+        # Draw border
+        fillRect(0, 0, 400, 2, 0xFF444466)
+        fillRect(0, 298, 400, 2, 0xFF444466)
+        fillRect(0, 0, 2, 300, 0xFF444466)
+        fillRect(398, 0, 2, 300, 0xFF444466)
+
+        # Draw enemy2 (orange roamer)
+        fillRect(rx, ry, 10, 10, 0xFFFF8800)
+
+        # Draw enemy1 (red chaser)
+        fillRect(ex, ey, 10, 10, 0xFFFF2222)
+
+        # Draw player (green)
+        fillRect(px, py, 10, 10, 0xFF22FF44)
+
+        present()
+        threadSleepMs(16)
+    end
+
+    # Signal threads to stop
+    poke(shared + 40, 1)
+    threadJoin(ai1)
+    threadJoin(ai2)
+    closeWindow()
+    return 0
+end

@@ -1,0 +1,8 @@
+app gui
+
+@import("gdi32.dll") CreateCompatibleDC
+extern CreateCompatibleDC(x: int) -> int
+
+func main()
+    CreateCompatibleDC(0)
+end

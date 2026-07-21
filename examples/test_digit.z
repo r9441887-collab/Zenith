@@ -1,0 +1,37 @@
+app gui
+
+func fill(x: int, y: int, w: int, h: int, col: int)
+    var cx: int = x
+    while cx < x + w
+        var cy: int = y
+        while cy < y + h
+            drawPixel(cx, cy, col)
+            cy = cy + 1
+        end
+        cx = cx + 1
+    end
+end
+
+func drawDigit1(ox: int, oy: int, s: int, col: int)
+    fill(ox + s, oy,        s, s, col)
+    fill(ox,     oy + s,    s*2, s, col)
+    fill(ox + s, oy + s*2,  s, s, col)
+    fill(ox + s, oy + s*3,  s, s, col)
+    fill(ox + s, oy + s*4,  s, s, col)
+    fill(ox + s, oy + s*5,  s, s, col)
+    fill(ox,     oy + s*6,  s*3, s, col)
+end
+
+func main()
+    createWindow(200, 200, "Test")
+
+    var green: int = 0xFF00FF00
+
+    while getKey(27) == 0
+        clear(0xFF000000)
+        drawDigit1(50, 30, 10, green)
+        present()
+    end
+
+    closeWindow()
+end

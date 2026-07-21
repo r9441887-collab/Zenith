@@ -1,0 +1,36 @@
+app console
+func main() -> int
+    var v1: int = 1
+    var v2: int = 2
+    var v3: int = 3
+    var v4: int = 4
+    var v5: int = 5
+    var v6: int = 6
+    var v7: int = 7
+    var v8: int = 8
+    var v9: int = 9
+    var v10: int = 10
+    var v11: int = 11
+    var v12: int = 12
+    var v13: int = 13
+    var v14: int = 14
+    var v15: int = 15
+    var v16: int = 16
+    var v17: int = 17
+    var v18: int = 18
+    var v19: int = 19
+    var v20: int = 20
+    var v21: int = 21
+    var v22: int = 22
+    var v23: int = 23
+    var v24: int = 24
+    var v25: int = 25
+    var v26: int = 26
+    var v27: int = 27
+    var v28: int = 28
+    var v29: int = 29
+    var v30: int = 30
+    var result: int = v1+v2+v3+v4+v5+v6+v7+v8+v9+v10+v11+v12+v13+v14+v15+v16+v17+v18+v19+v20+v21+v22+v23+v24+v25+v26+v27+v28+v29+v30
+    print(result)
+    return result
+end

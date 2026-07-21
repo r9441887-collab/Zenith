@@ -1,0 +1,9 @@
+app console
+func main() -> int
+    var x: int = 10
+    var y: int = -x
+    if y == -10
+        return 42
+    end
+    return 1
+end

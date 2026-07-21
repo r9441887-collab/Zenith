@@ -1,0 +1,11 @@
+app console
+
+@import("user32.dll") RegisterClassExA
+
+extern func RegisterClassExA(x: int) -> int
+
+func main()
+    var r: int = RegisterClassExA(0)
+    printInt(r)
+    print("\n")
+end

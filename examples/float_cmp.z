@@ -1,0 +1,8 @@
+app console
+func main() -> int
+    var a: float = 1.0
+    if a > 0.0
+        return 1
+    end
+    return 0
+end

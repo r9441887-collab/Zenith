@@ -1,0 +1,8 @@
+app console
+
+func main() -> int
+    print("Hello!")
+    pause()
+    print("Done!")
+    return 0
+end

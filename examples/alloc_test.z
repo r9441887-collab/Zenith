@@ -1,0 +1,5 @@
+app console
+func main() -> int
+    var p: int = alloc(16)
+    return p
+end

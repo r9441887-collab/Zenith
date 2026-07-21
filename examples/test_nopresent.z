@@ -1,0 +1,9 @@
+app gui
+
+func main()
+    createWindow(320, 240, "No Present")
+    clear(0xFFFF0000)
+    while getKey(27) == 0
+    end
+    closeWindow()
+end

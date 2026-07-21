@@ -1,0 +1,6 @@
+app console
+func main() -> int
+    print("Hello")
+    print("World")
+    return 0
+end

@@ -1,0 +1,14 @@
+app console
+func sum_to(n: int) -> int
+    var i: int = 0
+    var total: int = 0
+    while i < n
+        i = i + 1
+        total = total + i
+    end
+    return total
+end
+
+func main() -> int
+    return sum_to(10)
+end

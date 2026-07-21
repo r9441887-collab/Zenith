@@ -1,0 +1,12 @@
+app gui
+
+func main()
+    createWindow(320, 240, "Color Test")
+    clear(Red)
+    present()
+    while processMessages() != 0
+        clear(Green)
+        present()
+    end
+    closeWindow()
+end

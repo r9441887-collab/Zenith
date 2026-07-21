@@ -1,0 +1,7 @@
+app gui
+
+func main()
+    createWindow(320, 240, "Min")
+    getKey(27)
+    closeWindow()
+end

@@ -1,0 +1,175 @@
+app gui
+
+func fill(x: int, y: int, w: int, h: int, col: int)
+    var cx: int = x
+    while cx < x + w
+        var cy: int = y
+        while cy < y + h
+            drawPixel(cx, cy, col)
+            cy = cy + 1
+        end
+        cx = cx + 1
+    end
+end
+
+func drawDigit1(ox: int, oy: int, s: int, col: int)
+    #   .X.
+    #  .XX.
+    #   .X.
+    #   .X.
+    #   .X.
+    #   .X.
+    #  .XXX
+    fill(ox + s, oy,        s, s, col)
+    fill(ox,     oy + s,    s*2, s, col)
+    fill(ox + s, oy + s*2,  s, s, col)
+    fill(ox + s, oy + s*3,  s, s, col)
+    fill(ox + s, oy + s*4,  s, s, col)
+    fill(ox + s, oy + s*5,  s, s, col)
+    fill(ox,     oy + s*6,  s*3, s, col)
+end
+
+func drawDigit2(ox: int, oy: int, s: int, col: int)
+    #  .XXX.
+    #  X...X
+    #  ...X.
+    #  ..X..
+    #  .X...
+    #  X....
+    #  XXXXX
+    fill(ox + s,   oy,        s*3, s, col)
+    fill(ox,       oy + s,    s, s, col)
+    fill(ox + s*4, oy + s,    s, s, col)
+    fill(ox + s*4, oy + s*2,  s, s, col)
+    fill(ox + s*3, oy + s*3,  s, s, col)
+    fill(ox + s*2, oy + s*4,  s, s, col)
+    fill(ox + s,   oy + s*5,  s, s, col)
+    fill(ox,       oy + s*6,  s*5, s, col)
+end
+
+func drawDigit3(ox: int, oy: int, s: int, col: int)
+    #  .XXX.
+    #  X...X
+    #  ....X
+    #  ..XX.
+    #  ....X
+    #  X...X
+    #  .XXX.
+    fill(ox + s,   oy,        s*3, s, col)
+    fill(ox,       oy + s,    s, s, col)
+    fill(ox + s*4, oy + s,    s, s, col)
+    fill(ox + s*4, oy + s*2,  s, s, col)
+    fill(ox + s*3, oy + s*3,  s, s*2, col)
+    fill(ox + s*4, oy + s*4,  s, s, col)
+    fill(ox,       oy + s*5,  s, s, col)
+    fill(ox + s*4, oy + s*5,  s, s, col)
+    fill(ox + s,   oy + s*6,  s*3, s, col)
+end
+
+func main()
+    createWindow(400, 300, "F12 Switcher")
+
+    var bg: int = 0xFF1A1A2E
+    var green: int = 0xFF00FF66
+    var dim: int = 0xFF334455
+    var white: int = 0xFFCCCCCC
+    var darkgreen: int = 0xFF004422
+
+    var active: int = 1
+    var wasPressed: int = 0
+    var t: int = 0
+
+    while getKey(27) == 0
+        clear(bg)
+
+        # Title bar
+        fill(0, 0, 400, 2, green)
+
+        # F12 hint at bottom
+        fill(130, 285, 140, 1, dim)
+        fill(135, 280, 2, 5, dim)
+        fill(135, 280, 12, 1, dim)
+        fill(145, 280, 8, 5, dim)
+        fill(145, 280, 12, 1, dim)
+        fill(145, 284, 12, 1, dim)
+        fill(155, 280, 2, 5, dim)
+        fill(160, 280, 12, 1, dim)
+        fill(160, 284, 8, 1, dim)
+        fill(160, 280, 2, 5, dim)
+        fill(168, 280, 4, 1, dim)
+        fill(172, 280, 2, 5, dim)
+        fill(172, 284, 12, 1, dim)
+        fill(172, 280, 12, 1, dim)
+        fill(182, 280, 2, 5, dim)
+        fill(187, 280, 12, 1, dim)
+        fill(187, 284, 12, 1, dim)
+        fill(195, 280, 2, 5, dim)
+        fill(200, 280, 2, 5, dim)
+        fill(200, 280, 8, 1, dim)
+        fill(200, 284, 8, 1, dim)
+        fill(206, 280, 2, 5, dim)
+        fill(212, 280, 2, 5, dim)
+        fill(212, 280, 8, 1, dim)
+        fill(212, 282, 4, 1, dim)
+        fill(212, 284, 8, 1, dim)
+
+        # Box 1
+        fill(30, 50, 160, 190, darkgreen)
+        fill(30, 50, 160, 2, dim)
+
+        # Box 2
+        fill(210, 50, 160, 190, darkgreen)
+        fill(210, 50, 160, 2, dim)
+
+        # Highlight active box
+        if active == 1
+            fill(30, 50, 160, 190, darkgreen)
+            fill(30, 50, 160, 3, green)
+            fill(30, 237, 160, 3, green)
+            fill(30, 50, 3, 190, green)
+            fill(187, 50, 3, 190, green)
+            drawDigit1(85, 90, 14, green)
+        else
+            fill(30, 50, 160, 190, darkgreen)
+            fill(30, 50, 160, 3, dim)
+            fill(30, 237, 160, 3, dim)
+            fill(30, 50, 3, 190, dim)
+            fill(187, 50, 3, 190, dim)
+            drawDigit1(85, 90, 14, dim)
+        end
+
+        if active == 2
+            fill(210, 50, 160, 190, darkgreen)
+            fill(210, 50, 160, 3, green)
+            fill(210, 237, 160, 3, green)
+            fill(210, 50, 3, 190, green)
+            fill(367, 50, 3, 190, green)
+            drawDigit2(265, 90, 14, green)
+        else
+            fill(210, 50, 160, 190, darkgreen)
+            fill(210, 50, 160, 3, dim)
+            fill(210, 237, 160, 3, dim)
+            fill(210, 50, 3, 190, dim)
+            fill(367, 50, 3, 190, dim)
+            drawDigit2(265, 90, 14, dim)
+        end
+
+        # Handle F12 (vk=0x7B)
+        if getKey(123) == 1
+            if wasPressed == 0
+                if active == 1
+                    active = 2
+                else
+                    active = 1
+                end
+                wasPressed = 1
+            end
+        else
+            wasPressed = 0
+        end
+
+        present()
+    end
+
+    closeWindow()
+end

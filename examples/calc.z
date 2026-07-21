@@ -1,0 +1,57 @@
+app console
+func add(a: int, b: int) -> int
+    return a + b
+end
+
+func sub(a: int, b: int) -> int
+    return a - b
+end
+
+func mul(a: int, b: int) -> int
+    return a * b
+end
+
+func div(a: int, b: int) -> int
+    return a / b
+end
+
+func main() -> int
+    var a: int = 10
+    var b: int = 20
+    var c: int = 30
+    var d: int = 40
+    var e: int = 50
+    var f: int = 60
+    var g: int = 70
+    var h: int = 80
+    var i: int = 90
+    var j: int = 100
+    var k: int = 110
+    var l: int = 120
+    var m: int = 130
+    var n: int = 140
+    var o: int = 150
+    var p: int = 160
+    var q: int = 170
+    var r: int = 180
+
+    var r1: int = add(a, b)
+    print(r1)
+
+    var r2: int = sub(c, d)
+    print(r2)
+
+    var r3: int = mul(e, f)
+    print(r3)
+
+    var r4: int = div(h, b)
+    print(r4)
+
+    var r5: int = add(mul(a, b), div(h, b))
+    print(r5)
+
+    var r6: int = a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q + r
+    print(r6)
+
+    return 0
+end
