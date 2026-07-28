@@ -130,9 +130,12 @@ Token Lexer::scanIdentOrKeyword() {
 }
 
 Token Lexer::scanString() {
+    int startLine = line;
+    int startCol = col;
     advance(); // skip opening "
     std::string result;
     while (!isAtEnd() && peek() != '"') {
+        if (peek() == '\n') return makeError("Unterminated string: newline in string literal");
         if (peek() == '\\') {
             advance(); // skip backslash
             if (isAtEnd()) return makeError("Unterminated string escape");
@@ -145,7 +148,7 @@ Token Lexer::scanString() {
                 case '\\': result += '\\'; break;
                 case '"': result += '"'; break;
                 case '0': result += '\0'; break;
-                default: result += '\\'; result += esc; break;
+                default: return makeError(std::string("Unknown escape sequence: \\") + esc);
             }
         } else {
             result += peek();
@@ -156,8 +159,8 @@ Token Lexer::scanString() {
     Token t;
     t.kind = TokenKind::StringLit;
     t.text = result;
-    t.line = line;
-    t.col = col - (int)result.size() - 2;
+    t.line = startLine;
+    t.col = startCol;
     t.intVal = 0;
     t.floatVal = 0.0;
     advance(); // skip closing "
@@ -214,6 +217,12 @@ Token Lexer::scanToken() {
         case '>':
             if (match('=')) return makeToken(TokenKind::GtEq);
             return makeToken(TokenKind::Gt);
+        case '&':
+            if (match('&')) return makeToken(TokenKind::AmpAmp);
+            return makeError("Unexpected character: &");
+        case '|':
+            if (match('|')) return makeToken(TokenKind::PipePipe);
+            return makeError("Unexpected character: |");
         default:
             return makeError("Unexpected character: " + std::string(1, c));
     }
@@ -231,7 +240,6 @@ const std::vector<Token>& Lexer::all() {
             Token t = scanToken();
             tokens.push_back(t);
             if (t.kind == TokenKind::Error) {
-                tokens.push_back(makeToken(TokenKind::Eof));
                 break;
             }
             if (t.kind == TokenKind::Eof) break;

@@ -1,0 +1,184 @@
+# Управление памятью
+
+Zenith не использует сборщик мусора. Память управляется через
+встроенные аллокаторы.
+
+## Bump Allocator (alloc / free)
+
+Простой bump-allocator. 64KB куча в секции `.data`.
+
+```zenith
+var p: int = alloc(64)     # выделить 64 байта
+free(p)                     # no-op (bump-allocator не освобождает)
+```
+
+### Ограничения
+
+- Максимум 65536 байт на все аллокации
+- `free()` не работает — память не освобождается
+- При переполнении `alloc()` возвращает 0
+
+### Использование: shared memory между потоками
+
+```zenith
+var shared: int = alloc(64)
+poke(shared, 100)          # записать в shared memory
+var val: int = peek(shared) # прочитать
+```
+
+## Arena Allocator
+
+Bump-allocator сброса. Идеален для временных объектов на кадр.
+
+### Структура в памяти
+
+```
+[capacity:8][used:8][данные...]
+ ^ handle    +8     +16
+```
+
+### Функции
+
+| Функция | Описание |
+|---------|----------|
+| `arenaCreate(capacity) -> handle` | Создать арену |
+| `arenaAlloc(arena, size) -> ptr` | O(1) выделение |
+| `arenaReset(arena) -> void` | Сбросить used=0 |
+| `arenaDestroy(arena) -> void` | No-op |
+
+### Пример
+
+```zenith
+var arena: int = arenaCreate(4096)
+
+var p1: int = arenaAlloc(arena, 64)    # ptr = handle+16
+var p2: int = arenaAlloc(arena, 128)   # ptr = handle+16+64
+poke(p1, 42)
+poke(p2, 99)
+
+arenaReset(arena)                       # все указатели невалидны
+# arenaAlloc снова начинает с начала
+
+arenaDestroy(arena)                     # no-op
+```
+
+### Паттерн: кадровый аллокатор
+
+```zenith
+var frameArena: int = arenaCreate(65536)
+
+while getKey(27) == 0
+    arenaReset(frameArena)              # сброс в начале кадра
+
+    var temp: int = arenaAlloc(frameArena, 1024)
+    # ... использовать temp в этом кадре ...
+    # temp будет перезаписан в следующем кадре
+
+    present()
+end
+```
+
+## Pool Allocator
+
+Фиксированные блоки. O(1) аллокация, нет фрагментации.
+
+### Структура
+
+```
+[blockSize:8][count:8][nextIdx:8][данные...]
+ ^ handle     +8       +16        +24
+```
+
+### Функции
+
+| Функция | Описание |
+|---------|----------|
+| `poolCreate(blockSize, count) -> handle` | Создать пул |
+| `poolAlloc(pool) -> ptr` | O(1) следующий блок |
+| `poolFree(pool, ptr) -> void` | No-op |
+| `poolReset(pool) -> void` | Сбросить nextIdx=0 |
+
+### Пример: пул пуль
+
+```zenith
+var bulletPool: int = poolCreate(32, 100)  # 100 пуль по 32 байта
+
+# Выстрел
+var bullet: int = poolAlloc(bulletPool)
+if bullet != 0
+    poke(bullet, 100)      # x позиция
+    poke(bullet + 8, 200)  # y позиция
+end
+
+poolReset(bulletPool)       # удалить все пули
+```
+
+## Slot Allocator (поколенческий)
+
+ECS-стиль allocator с защитой от use-after-free.
+
+### Handle
+
+`handle = (generation << 32) | slotIndex`
+
+Поколение (старшие 32 бита) инкрементируется при освобождении.
+Старый handle становится невалидным.
+
+### Структура
+
+```
+Header (32 байта):
+[maxCount:8][dataSize:8][freeHead:8][aliveCount:8]
+
+Слоты (offset 32):
+Stride = 16 + dataSize
+Каждый: [generation:8][nextFree:8][data: dataSize]
+```
+
+### Функции
+
+| Функция | Описание |
+|---------|----------|
+| `slotCreate(maxCount, dataSize) -> handle` | Создать пул слотов |
+| `slotSpawn(slot) -> handle` | Выделить слот (с поколением) |
+| `slotKill(slot, handle) -> void` | Освободить (инкремент generation) |
+| `slotGetI64(slot, handle, offset) -> int` | Прочитать i64 из данных |
+| `slotSetI64(slot, handle, offset, value) -> void` | Записать i64 |
+| `slotGetF32(slot, handle, offset) -> int` | Прочитать float (как int) |
+| `slotSetF32(slot, handle, offset, value) -> void` | Записать float |
+| `slotCount(slot) -> int` | Количество активных слотов |
+| `slotReset(slot) -> void` | Сброс всего пула |
+
+### Пример: игровые сущности
+
+```zenith
+var entities: int = slotCreate(100, 32)  # 100 сущностей, по 32 байта данных
+
+# Создать врага
+var enemy: int = slotSpawn(entities)
+slotSetI64(entities, enemy, 0, 350)      # x = 350
+slotSetI64(entities, enemy, 8, 250)      # y = 250
+slotSetI64(entities, enemy, 16, 100)     # hp = 100
+
+# Прочитать
+var ex: int = slotGetI64(entities, enemy, 0)   # 350
+var ey: int = slotGetI64(entities, enemy, 8)   # 250
+
+# Удалить
+slotKill(entities, enemy)
+# Старый enemy теперь невалиден (generation инкрементировался)
+
+# Переиспользование слота
+var newEnemy: int = slotSpawn(entities)
+# newEnemy имеет тот же индекс, но другое поколение
+# Старый handle enemy НЕ будет работать
+```
+
+## Сравнение аллокаторов
+
+| Аллокатор | Аллокация | Освобождение | Использование |
+|-----------|-----------|-------------|---------------|
+| `alloc` | O(1) bump | No-op | Общая память |
+| Arena | O(1) bump | Весь разом | Кадровые данные |
+| Pool | O(1) index | Весь разом | Пулы объектов |
+| Slot | O(1) | Поколенческое | ECS сущности |

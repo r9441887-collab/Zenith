@@ -6,7 +6,8 @@
 
 enum class TypeKind { Int, Float, Bool, Void, String, Vec2, Vec3, Color, Entity, Struct };
 
-enum class AppType { Console, GUI };
+enum class AppType { Console, GUI, EFI };
+enum class RenderType { Software, DX11 };
 
 struct Type {
     TypeKind kind = TypeKind::Void;
@@ -105,6 +106,14 @@ struct WhileStmt : Stmt {
     Block body;
 };
 
+struct ForStmt : Stmt {
+    std::string varName;
+    std::unique_ptr<Expr> start;
+    std::unique_ptr<Expr> end;
+    std::unique_ptr<Expr> step;   // optional, nullptr means step=1
+    Block body;
+};
+
 struct FunctionDecl : Node {
     std::string name;
     std::vector<Param> params;
@@ -135,5 +144,6 @@ struct Program {
     std::vector<ImportDecl> imports;
     std::vector<std::unique_ptr<StructDecl>> structs;
     AppType appType = AppType::Console;
+    RenderType renderType = RenderType::Software;
     bool isLibrary = false;  // true if # [no_main] is present
 };

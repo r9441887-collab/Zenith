@@ -1,0 +1,173 @@
+# Управление потоком выполнения
+
+## if / else
+
+```zenith
+if hp <= 0
+    print("dead")
+else
+    print("alive")
+end
+```
+
+### else if (цепочки)
+
+```zenith
+if hp <= 0
+    print("dead")
+else if hp < 30
+    print("critical")
+else if hp < 70
+    print("wounded")
+else
+    print("healthy")
+end
+```
+
+`else if` парсится как вложенный `if` внутри `else`-блока.
+Нет отдельного ключевого слова `elif`.
+
+### Как компилируется
+
+```asm
+  mov rax, [rbp-16]       ; загрузить hp
+  cmp rax, 0
+  jle .dead_label         ; если hp <= 0 → переход
+  ; ... then-блок ...
+  jmp .end_label
+.dead_label:
+  ; ... else-блок ...
+.end_label:
+```
+
+## while
+
+```zenith
+var i: int = 0
+while i < 10
+    print(i)
+    i = i + 1
+end
+```
+
+### Как компилируется
+
+```asm
+.loop:
+  mov rax, [rbp-16]       ; i
+  cmp rax, 10
+  jge .end                ; если i >= 10 → выход
+  ; ... тело цикла ...
+  inc qword [rbp-16]      ; i++
+  jmp .loop
+.end:
+```
+
+### Пустой while (ожидание)
+
+```zenith
+while getKey(27) == 0 end   # ждём Esc
+```
+
+## for
+
+```zenith
+for i = 0, 10
+    print(i)
+end
+```
+
+Вывод: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+
+### С шагом
+
+```zenith
+for i = 0, 20, 2
+    print(i)
+end
+```
+
+Вывод: 0, 2, 4, 6, 8, 10, 12, 14, 16, 18
+
+### Обратный отсчёт
+
+```zenith
+for i = 10, 0, -1
+    print(i)
+end
+```
+
+Вывод: 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+
+Компилятор автоматически определяет направление:
+при отрицательном шаге условие выхода меняется с `jge` на `jle`.
+
+### Как компилируется
+
+```asm
+  mov qword [rbp-16], 0           ; i = 0
+.loop:
+  mov rax, [rbp-16]
+  cmp rax, 10
+  jge .end                        ; выход если i >= 10
+  ; ... тело ...
+  add qword [rbp-16], 1           ; i += step
+  jmp .loop
+.end:
+```
+
+## Вложенные конструкции
+
+```zenith
+var i: int = 0
+while i < 10
+    var j: int = 0
+    while j < 10
+        if i == j
+            print(i)
+        end
+        j = j + 1
+    end
+    i = i + 1
+end
+```
+
+## break и continue
+
+В Zenith **нет** `break` и `continue`.
+Используйте `while` с флагом или `if` для раннего выхода:
+
+```zenith
+# Вместо break:
+var running: int = 1
+while running == 1
+    if getKey(27) == 1
+        running = 0
+    end
+    # ... основная логика ...
+end
+
+# Вместо continue:
+var i: int = 0
+while i < 10
+    if i == 5
+        i = i + 1    # пропустить итерацию
+    else
+        print(i)
+        i = i + 1
+    end
+end
+```
+
+## Пример: простой цикл
+
+```zenith
+func main() -> int
+    var sum: int = 0
+    for i = 1, 101
+        sum = sum + i
+    end
+    print(sum)    # 5050
+    return 0
+end
+```

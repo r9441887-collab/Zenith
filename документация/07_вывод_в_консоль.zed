@@ -1,0 +1,120 @@
+# Вывод в консоль
+
+## print(value)
+
+Единственная функция вывода. Полиморфна: принимает строку ИЛИ целое число.
+
+### Печать строки
+
+```zenith
+print("Hello, World!")
+```
+
+Выводит строку + `\r\n` (Windows-перевод строки).
+
+### Печать числа
+
+```zenith
+print(42)
+print(-7)
+print(0)
+```
+
+Конвертирует число в десятичную строку и выводит через `WriteFile`.
+
+### Печать выражений
+
+```zenith
+var x: int = 5 + 3
+print(x)           # 8
+
+print(2 * 3 + 1)   # 7
+print(100 / 10)    # 10
+```
+
+### Важные ограничения
+
+- **Нет** `printFloat()` — float нельзя напечатать напрямую
+- **Нет** `printHex()` — hex тоже нельзя
+- **Нет** конкатенации в `print` — только один аргумент
+- Всегда добавляет `\r\n` в конце
+
+### Решение: печать float
+
+Если нужно напечатать float, конвертируйте в int:
+
+```zenith
+var pi: float = 3.14
+var piInt: int = cvtss2si(pi)   # нет такой функции!
+# Альтернатива: умножьте на 100 и печатайте как int
+var piScaled: int = 314
+print(piScaled)    # напечатает "314" (означает 3.14)
+```
+
+## pause()
+
+```zenith
+pause()
+```
+
+Выводит "Press any key to continue . . ." и ждёт нажатия клавиши.
+Через `GetStdHandle` + `WriteFile` + `ReadFile`.
+
+## sleep(seconds)
+
+```zenith
+sleep(1)        # пауза 1 секунда
+sleep(2)        # пауза 2 секунды
+```
+
+Приостанавливает выполнение на N секунд.
+Через Win32 `Sleep(ms)` (конвертация сек → мс через `imul rax, 1000`).
+
+## peek(addr) / poke(addr, val)
+
+Прямой доступ к памяти (для отладки и многопоточности):
+
+```zenith
+var p: int = alloc(64)     # выделить 64 байта
+poke(p, 42)                # записать 42 по адресу p
+var val: int = peek(p)     # прочитать: val = 42
+
+# Смещения:
+poke(p + 8, 100)
+poke(p + 16, 200)
+var a: int = peek(p)       # 42
+var b: int = peek(p + 8)   # 100
+var c: int = peek(p + 16)  # 200
+```
+
+## Полный пример
+
+```zenith
+app console
+
+func main() -> int
+    print("Запуск программы...")
+    sleep(1)
+
+    var x: int = 42
+    print("Значение x:")
+    print(x)
+
+    print("Вычисление...")
+    var result: int = (x * 2 + 10) / 4
+    print(result)
+
+    pause()
+    return 0
+end
+```
+
+Вывод:
+```
+Запуск программы...
+Значение x:
+42
+Вычисление...
+23
+Press any key to continue . . .
+```

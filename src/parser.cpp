@@ -86,7 +86,7 @@ Block Parser::parseBlock(TokenKind terminator) {
         if (check(TokenKind::Newline)) { advance(); continue; }
         if (check(TokenKind::Struct)) {
             std::cerr << "Error at line " << peek().line << ": 'struct' cannot be declared inside a block" << std::endl;
-            advance();
+            parseStruct();
             continue;
         }
         block.stmts.push_back(parseStatement());
@@ -180,7 +180,7 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
         advance();
         while (!check(TokenKind::Eof) && !check(TokenKind::RBrace)) {
             if (check(TokenKind::Newline)) { advance(); continue; }
-            if (check(TokenKind::Var)) {
+            if (check(TokenKind::Var) || check(TokenKind::Let)) {
                 advance();
                 StructField f;
                 f.name = consume(TokenKind::Ident, "Expected field name").text;
@@ -189,7 +189,7 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
                 sd->fields.push_back(f);
                 if (check(TokenKind::Newline)) advance();
             } else {
-                std::cerr << "Error at line " << peek().line << ": expected 'var' keyword for struct field, or '}' to end struct" << std::endl;
+                std::cerr << "Error at line " << peek().line << ": expected 'var'/'let' keyword for struct field, or '}' to end struct" << std::endl;
                 break;
             }
         }
@@ -197,13 +197,13 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
     } else {
         while (!check(TokenKind::Eof) && !check(TokenKind::End)) {
             if (check(TokenKind::Newline)) { advance(); continue; }
-            if (check(TokenKind::Var)) {
-                advance();
-                StructField f;
-                f.name = consume(TokenKind::Ident, "Expected field name").text;
-                consume(TokenKind::Colon, "Expected ':'");
-                f.type = parseType();
-                sd->fields.push_back(f);
+    if (check(TokenKind::Var) || check(TokenKind::Let)) {
+        advance();
+        StructField f;
+        f.name = consume(TokenKind::Ident, "Expected field name").text;
+        consume(TokenKind::Colon, "Expected ':'");
+        f.type = parseType();
+        sd->fields.push_back(f);
                 if (check(TokenKind::Newline)) advance();
             } else {
                 break;
@@ -217,7 +217,11 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
 
 std::unique_ptr<VarDecl> Parser::parseVarDecl() {
     auto vd = std::make_unique<VarDecl>();
-    consume(TokenKind::Var, "Expected 'var'");
+    if (!check(TokenKind::Var) && !check(TokenKind::Let)) {
+        std::cerr << "Error at line " << peek().line << ": Expected 'var' or 'let'" << std::endl;
+        throw std::runtime_error("Expected 'var' or 'let'");
+    }
+    advance();
     vd->name = consume(TokenKind::Ident, "Expected variable name").text;
     consume(TokenKind::Colon, "Expected ':'");
 
@@ -238,9 +242,10 @@ std::unique_ptr<VarDecl> Parser::parseVarDecl() {
 }
 
 std::unique_ptr<Stmt> Parser::parseStatement() {
-    if (check(TokenKind::Var)) return parseVarDecl();
+    if (check(TokenKind::Var) || check(TokenKind::Let)) return parseVarDecl();
     if (check(TokenKind::If)) return parseIf();
     if (check(TokenKind::While)) return parseWhile();
+    if (check(TokenKind::For)) return parseFor();
     if (check(TokenKind::Return)) {
         advance();
         auto stmt = std::make_unique<ReturnStmt>();
@@ -270,19 +275,31 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         if (check(TokenKind::Newline)) advance();
         return stmt;
     }
-    if (check(TokenKind::Ident) && peekNext().kind == TokenKind::Dot &&
-        pos + 3 < tokens.size() && tokens[pos + 2].kind == TokenKind::Ident &&
-        tokens[pos + 3].kind == TokenKind::Eq) {
-        std::string firstName = advance().text;
-        advance();
-        std::string fieldName = consume(TokenKind::Ident, "Expected field name").text;
-        consume(TokenKind::Eq, "Expected '='");
-        auto stmt = std::make_unique<AssignStmt>();
-        stmt->name = firstName;
-        stmt->memberPath.push_back(fieldName);
-        stmt->value = parseExpression();
-        if (check(TokenKind::Newline)) advance();
-        return stmt;
+    if (check(TokenKind::Ident) && peekNext().kind == TokenKind::Dot) {
+        size_t scan = pos + 2;
+        while (scan + 1 < tokens.size() &&
+               tokens[scan].kind == TokenKind::Ident &&
+               tokens[scan + 1].kind == TokenKind::Dot) {
+            scan += 2;
+        }
+        if (scan < tokens.size() &&
+            tokens[scan].kind == TokenKind::Ident &&
+            scan + 1 < tokens.size() &&
+            tokens[scan + 1].kind == TokenKind::Eq) {
+            std::string firstName = advance().text;
+            advance();
+            auto stmt = std::make_unique<AssignStmt>();
+            stmt->name = firstName;
+            while (check(TokenKind::Dot)) {
+                advance();
+                stmt->memberPath.push_back(
+                    consume(TokenKind::Ident, "Expected field name").text);
+            }
+            consume(TokenKind::Eq, "Expected '='");
+            stmt->value = parseExpression();
+            if (check(TokenKind::Newline)) advance();
+            return stmt;
+        }
     }
     auto stmt = std::make_unique<ExprStmt>();
     stmt->expr = parseExpression();
@@ -327,8 +344,54 @@ std::unique_ptr<Stmt> Parser::parseWhile() {
     return stmt;
 }
 
+std::unique_ptr<Stmt> Parser::parseFor() {
+    advance(); // consume 'for'
+    auto stmt = std::make_unique<ForStmt>();
+    stmt->varName = consume(TokenKind::Ident, "Expected loop variable name").text;
+    consume(TokenKind::Eq, "Expected '=' after loop variable");
+    stmt->start = parseExpression();
+    consume(TokenKind::Comma, "Expected ',' after start value");
+    stmt->end = parseExpression();
+    if (match(TokenKind::Comma)) {
+        stmt->step = parseExpression();
+    }
+    if (check(TokenKind::Newline)) advance();
+    stmt->body = parseBlock(TokenKind::End);
+    consume(TokenKind::End, "Expected 'end' after for");
+    if (check(TokenKind::Newline)) advance();
+    return stmt;
+}
+
 std::unique_ptr<Expr> Parser::parseExpression() {
-    return parseComparison();
+    return parseLogicalOr();
+}
+
+std::unique_ptr<Expr> Parser::parseLogicalOr() {
+    auto left = parseLogicalAnd();
+    while (check(TokenKind::PipePipe)) {
+        auto op = advance();
+        auto right = parseLogicalAnd();
+        auto bin = std::make_unique<BinaryExpr>();
+        bin->left = std::move(left);
+        bin->op = op.text;
+        bin->right = std::move(right);
+        left = std::move(bin);
+    }
+    return left;
+}
+
+std::unique_ptr<Expr> Parser::parseLogicalAnd() {
+    auto left = parseComparison();
+    while (check(TokenKind::AmpAmp)) {
+        auto op = advance();
+        auto right = parseComparison();
+        auto bin = std::make_unique<BinaryExpr>();
+        bin->left = std::move(left);
+        bin->op = op.text;
+        bin->right = std::move(right);
+        left = std::move(bin);
+    }
+    return left;
 }
 
 std::unique_ptr<Expr> Parser::parseComparison() {
@@ -479,36 +542,35 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         throw std::runtime_error("Unexpected token '" + peek().text + "' at line " + std::to_string(peek().line));
     }
 
-    while (check(TokenKind::LBrack)) {
-        advance();
-        auto arr = std::make_unique<ArrayAccessExpr>();
-        arr->array = std::move(expr);
-        arr->index = parseExpression();
-        consume(TokenKind::RBrack, "Expected ']'");
-        expr = std::move(arr);
-    }
-
-    // Handle .field or .method() after array access
-    while (check(TokenKind::Dot)) {
-        advance();
-        auto memb = std::make_unique<MemberExpr>();
-        memb->object = std::move(expr);
-        memb->member = consume(TokenKind::Ident, "Expected field name after '.'").text;
-        if (check(TokenKind::LParen)) {
+    while (check(TokenKind::LBrack) || check(TokenKind::Dot)) {
+        if (check(TokenKind::LBrack)) {
             advance();
-            auto call = std::make_unique<CallExpr>();
-            call->name = memb->member;
-            call->receiver = std::move(memb);
-            if (!check(TokenKind::RParen)) {
-                call->args.push_back(parseExpression());
-                while (match(TokenKind::Comma)) {
-                    call->args.push_back(parseExpression());
-                }
-            }
-            consume(TokenKind::RParen, "Expected ')'");
-            expr = std::move(call);
+            auto arr = std::make_unique<ArrayAccessExpr>();
+            arr->array = std::move(expr);
+            arr->index = parseExpression();
+            consume(TokenKind::RBrack, "Expected ']'");
+            expr = std::move(arr);
         } else {
-            expr = std::move(memb);
+            advance();
+            auto memb = std::make_unique<MemberExpr>();
+            memb->object = std::move(expr);
+            memb->member = consume(TokenKind::Ident, "Expected field name after '.'").text;
+            if (check(TokenKind::LParen)) {
+                advance();
+                auto call = std::make_unique<CallExpr>();
+                call->name = memb->member;
+                call->receiver = std::move(memb);
+                if (!check(TokenKind::RParen)) {
+                    call->args.push_back(parseExpression());
+                    while (match(TokenKind::Comma)) {
+                        call->args.push_back(parseExpression());
+                    }
+                }
+                consume(TokenKind::RParen, "Expected ')'");
+                expr = std::move(call);
+            } else {
+                expr = std::move(memb);
+            }
         }
     }
 
@@ -567,14 +629,28 @@ void Parser::parseAppType(Program& prog) {
         std::string type = advance().text;
         if (type == "gui") {
             prog.appType = AppType::GUI;
+            prog.renderType = RenderType::Software;  // default
+            // Check for optional render type: "app gui sr" or "app gui dx"
+            if (check(TokenKind::Ident)) {
+                std::string rt = peek().text;
+                if (rt == "sr") {
+                    advance();
+                    prog.renderType = RenderType::Software;
+                } else if (rt == "dx") {
+                    advance();
+                    prog.renderType = RenderType::DX11;
+                }
+            }
         } else if (type == "console") {
             prog.appType = AppType::Console;
+        } else if (type == "efi") {
+            prog.appType = AppType::EFI;
         } else {
-            std::cerr << "Error at line " << previous().line << ": expected 'gui' or 'console' after 'app', got '" << type << "'\n";
+            std::cerr << "Error at line " << previous().line << ": expected 'gui', 'console', or 'efi' after 'app', got '" << type << "'\n";
             throw std::runtime_error("Invalid app type");
         }
     } else {
-        std::cerr << "Error at line " << peek().line << ": expected 'gui' or 'console' after 'app'\n";
+        std::cerr << "Error at line " << peek().line << ": expected 'gui', 'console', or 'efi' after 'app'\n";
         throw std::runtime_error("Expected app type");
     }
     if (check(TokenKind::Newline)) advance();
@@ -597,7 +673,7 @@ Program Parser::parse() {
         parseAppType(prog);
         appType = prog.appType;
     } else {
-        std::cerr << "Error at line " << peek().line << ": missing 'app' directive. Use 'app gui' or 'app console' at the top of the file.\n";
+        std::cerr << "Error at line " << peek().line << ": missing 'app' directive. Use 'app gui', 'app gui dx', 'app gui sr', 'app console', or 'app efi' at the top of the file.\n";
         throw std::runtime_error("Missing app directive");
     }
 
@@ -647,8 +723,14 @@ Program Parser::parse() {
         } else if (check(TokenKind::Struct)) {
             prog.structs.push_back(parseStruct());
         } else if (check(TokenKind::Func)) {
-            prog.functions.push_back(parseFunction());
-        } else if (check(TokenKind::Var)) {
+            auto func = parseFunction();
+            for (auto& f : prog.functions) {
+                if (f->name == func->name) {
+                    throw std::runtime_error("Duplicate function '" + func->name + "'");
+                }
+            }
+            prog.functions.push_back(std::move(func));
+        } else if (check(TokenKind::Var) || check(TokenKind::Let)) {
             prog.globals.push_back(parseVarDecl());
         } else {
             std::cerr << "Unexpected token '" << peek().text << "' at line " << peek().line << std::endl;

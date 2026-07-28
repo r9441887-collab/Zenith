@@ -1,0 +1,170 @@
+# Импорт DLL (библиотек)
+
+## Механизм
+
+Zenith вызывает C-функции через прямой импорт DLL на уровне PE-формата.
+Никаких обёрток, FFI-фреймворков или рантаймов.
+
+## Два способа импорта
+
+### 1. @import (рекомендуется)
+
+```zenith
+@import("user32.dll")
+@import("mylib.dll")
+```
+
+### 2. extern func с from
+
+```zenith
+extern func MessageBoxA(h: int, text: int, caption: int, type: int) -> int
+extern func MyFunc(a: int) -> int from "mylib.dll"
+```
+
+## Автоматический маппинг DLL
+
+Если DLL не указана, компилятор определяет её по имени функции:
+
+| Функции | DLL |
+|---------|-----|
+| `ExitProcess`, `GetStdHandle`, `WriteFile`, `ReadFile`, `Sleep`, `HeapAlloc`, `HeapFree`, `GetProcessHeap`, `GetModuleHandleA` | `kernel32.dll` |
+| `CreateWindowExA`, `DefWindowProcA`, `RegisterClassExA`, `DestroyWindow`, `GetDC`, `ReleaseDC`, `PeekMessageA`, `TranslateMessage`, `DispatchMessageA`, `GetAsyncKeyState`, `PostQuitMessage`, `ShowWindow`, `UpdateWindow` | `user32.dll` |
+| `CreateDIBSection`, `BitBlt`, `SelectObject`, `CreateCompatibleDC`, `DeleteObject` | `gdi32.dll` |
+| `D3D11CreateDevice`, `D3D11CreateDeviceAndSwapChain` | `d3d11.dll` |
+| `CreateDXGIFactory` | `dxgi.dll` |
+| `D3DCompileFromFile` | `d3dcompiler_47.dll` |
+| `threadCreate`, `threadJoin`, `threadSleepMs` | `libs_thread.dll` |
+| Остальные | `kernel32.dll` |
+
+## Как это работает
+
+### Шаг 1: Объявление
+
+```zenith
+@import("user32.dll")
+
+extern func MessageBoxA(h: int, text: int, caption: int, type: int) -> int
+```
+
+### Шаг 2: Компилятор строит Import Table
+
+Для каждой DLL создаётся:
+- **IMAGE_IMPORT_DESCRIPTOR** (20 байт в .rdata)
+- **ILT** (Import Lookup Table) в .data
+- **IAT** (Import Address Table) в .data
+- **Hint/Name table** (имя функции в .rdata)
+
+### Шаг 3: Загрузчик Windows
+
+При запуске .exe:
+1. Читает IMAGE_IMPORT_DESCRIPTOR
+2. Загружает DLL (`LoadLibrary`)
+3. Находит адреса функций (`GetProcAddress`)
+4. Записывает адреса в IAT
+
+### Шаг 4: Вызов
+
+```zenith
+MessageBoxA(0, textPtr, captionPtr, 0)
+```
+
+Генерируется:
+
+```asm
+mov  ecx, 0                    ; hWnd = NULL
+lea  rdx, [rip + str_text]     ; указатель на строку
+lea  r8,  [rip + str_caption]  ; указатель на заголовок
+mov  r9d, 0                    ; MB_OK
+sub  rsp, 0x28                 ; shadow space
+call [rip + IAT_MessageBoxA]   ; косвенный вызов через IAT
+add  rsp, 0x28
+```
+
+## Примеры
+
+### Win32 MessageBox
+
+```zenith
+app gui
+
+@import("user32.dll")
+
+extern func MessageBoxA(h: int, text: int, caption: int, type: int) -> int
+
+func main() -> int
+    var text: string = "Привет из Zenith!"
+    var caption: string = "Заголовок"
+    MessageBoxA(0, text, caption, 0)
+    return 0
+end
+```
+
+### Получение handle устройства
+
+```zenith
+app gui
+
+@import("kernel32.dll")
+
+extern func GetStdHandle(nStdHandle: int) -> int
+
+func main() -> int
+    var h: int = GetStdHandle(-11)   # STD_OUTPUT_HANDLE
+    print(h)                          # напечатает handle
+    return 0
+end
+```
+
+### Многопоточность
+
+```zenith
+app gui
+
+@import("libs.dll::thread")
+
+extern func threadCreate(fn: int, arg: int) -> int
+extern func threadJoin(handle: int) -> int
+extern func threadSleepMs(ms: int) -> void
+
+func worker(data: int) -> int
+    var i: int = 0
+    while i < 10
+        print(i)
+        threadSleepMs(100)
+        i = i + 1
+    end
+    return 0
+end
+
+func main() -> int
+    var t: int = threadCreate(worker, 0)
+    threadJoin(t)
+    print("Готово!")
+    return 0
+end
+```
+
+## Embedded DLL (--embed)
+
+Компилятор может встроить DLL прямо в .exe:
+
+```bash
+zenith --embed myapp.z -o myapp.exe
+```
+
+При запуске .exe DLL извлекаются в `%TEMP%` и загружаются через `LoadLibraryA`.
+Результат — полностью автономный .exe без внешних DLL.
+
+## libs.dll — системные библиотеки
+
+Для многопоточности и асинхронности:
+
+```zenith
+@import("libs.dll::thread")       # потоки
+@import("libs.dll::mutex")        # мьютексы
+@import("libs.dll::async")        # асинхронные задачи
+@import("libs.dll::threadpool")   # пул потоков
+
+# Или всё сразу:
+@import("libs.dll")
+```

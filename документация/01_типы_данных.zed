@@ -1,0 +1,104 @@
+# Типы данных
+
+## Примитивные типы
+
+| Тип | Размер | Регистр | Описание |
+|-----|--------|---------|----------|
+| `int` | 8 байт | `rax` | 64-bit signed integer |
+| `float` | 4 байта | `xmm0` | IEEE 754 single (SSE) |
+| `bool` | 4 байта | `rax` | true=1, false=0 |
+| `string` | 8 байт | `rax` | Указатель на строку в .rdata |
+| `void` | — | — | Нет значения |
+| `entity` | 8 байт | `rax` | Зарезервировано для ECS |
+
+## Встроенные структуры (app gui)
+
+| Тип | Размер | Поля | Описание |
+|-----|--------|------|----------|
+| `vec2` | 8 байт | `x: float`, `y: float` | 2D-вектор |
+| `vec3` | 16 байт | `x: float`, `y: float`, `z: float` | 3D-вектор (+padding) |
+| `color` | 16 байт | `r: float`, `g: float`, `b: float`, `a: float` | RGBA цвет |
+
+Автоматически добавляются при `app gui`.
+
+## Примеры использования
+
+```zenith
+var x: int = 42
+var pi: float = 3.14
+var flag: bool = true
+var name: string = "Player"
+```
+
+### Числовые литералы
+
+```zenith
+var a: int = 100          # десятичное
+var b: int = 0xFF         # hex (255)
+var c: int = 0xFFFF0000   # hex цвет (ARGB)
+var f: float = 3.14       # float литерал
+var g: float = 1.0f       # float с суффиксом f
+```
+
+### Bool
+
+```zenith
+var alive: bool = true
+var dead: bool = false
+
+# true = 1, false = 0
+# bool хранится как обычный int (0 или 1)
+```
+
+### Строки
+
+```zenith
+var msg: string = "Hello"
+
+# Экранирование:
+var nl: string = "строка1\nстрока2"      # \n = перевод строки
+var tab: string = "col1\tcol2"           # \t = табуляция
+var bs: string = "path\\file"            # \\ = обратный слэш
+var q: string = "said \"hello\""         # \" = кавычка
+var z: string = "data\0end"             # \0 = нулевой байт
+```
+
+### vec2, vec3, color (app gui)
+
+```zenith
+app gui
+
+func main()
+    var pos: vec2
+    pos.x = 100.0
+    pos.y = 200.0
+
+    var dir: vec3
+    dir.x = 1.0
+    dir.y = 0.0
+    dir.z = -1.0
+
+    var col: color
+    col.r = 1.0    # красный
+    col.g = 0.0    # зелёный
+    col.b = 0.0    # синий
+    col.a = 1.0    # альфа (непрозрачный)
+    return 0
+end
+```
+
+### Именованные цвета (app gui)
+
+| Имя | ARGB |
+|-----|------|
+| `Red` | `0xFFFF0000` |
+| `Green` | `0xFF00FF00` |
+| `Blue` | `0xFF0000FF` |
+| `White` | `0xFFFFFFFF` |
+| `Black` | `0xFF000000` |
+| `Yellow` | `0xFFFFFF00` |
+| `Cyan` | `0xFF00FFFF` |
+| `Magenta` | `0xFFFF00FF` |
+| `Gray` | `0xFF808080` |
+
+Формат цвета: `0xAARRGGBB` (Alpha, Red, Green, Blue).

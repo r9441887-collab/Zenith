@@ -22,10 +22,28 @@ class Codegen {
 public:
     explicit Codegen(Program& prog);
     void generate(const std::string& outputPath);
-    void setCompilerDir(const std::string& dir) { compilerDir = std::filesystem::path(dir); }
+    void generateWide(const std::wstring& outputPath);
+    void setCompilerDir(const std::string& dir);
     void setCompilerDir(const std::filesystem::path& dir) { compilerDir = dir; }
     bool isLibrary = false;
-    bool libOutput = false;   // --lib mode: generate DLL instead of EXE
+    bool libOutput = false;
+    bool embedDLLs = false;
+
+    // ===== codegen_builtins.cpp =====
+    bool tryBuiltinCall(CallExpr* call, int& resultReg);
+
+    // ===== codegen_gui.cpp =====
+    bool tryGUICall(CallExpr* call, int& resultReg);
+
+    // ===== codegen_dx11.cpp =====
+    void emitDX11Init();
+    void emitDX11Present();
+    void emitDX11Cleanup();
+
+    // ===== codegen_sw.cpp =====
+    void emitSWInit();
+    void emitSWPresent();
+    void emitSWCleanup();
 
 private:
     void emit8(uint8_t b);
@@ -52,7 +70,6 @@ private:
     void emitSub(int dst, int src);
     void emitImul(int dst, int src);
 
-    // SSE float instructions
     void emitMovssXmm(int xmmDst, int xmmSrc);
     void emitMovssXmmFromMem(int xmmDst, int gpReg, int offset);
     void emitMovssXmmToMem(int xmmDst, int gpReg, int offset);
@@ -91,9 +108,14 @@ private:
     void emitIncQwordDisp8(int baseReg, int disp);
     void emitMovQwordDisp8Imm32(int baseReg, int disp, int32_t imm);
 
+    void spillRegs();
+    void reloadRegs();
+    int spillBase = 0;
+    int locals = 0;
+
     struct CallFixup { size_t codePos; std::string target; };
     struct FuncRefFixup { size_t codePos; std::string target; };
-    struct JmpFixup { int codePos; int targetPos; };
+    struct JmpFixup { size_t codePos; int targetPos; };
     struct StrFixup { size_t codePos; int stringIndex; };
     struct ImportCallFixup { size_t codePos; std::string funcName; std::string dllName; };
     std::vector<CallFixup> callFixups;
@@ -111,6 +133,8 @@ private:
     void fixupSectionRVAs();
     void emitDllEntryPoint();
     void buildExportDir();
+    void emitWin64WinAPI(int x64Convention, bool isFloat, const std::vector<std::pair<Type,int>>& args, int stackBytes);
+    void printStructs();
 
     void collectStrings();
     void collectStmtStrings(Stmt* stmt);
@@ -163,6 +187,7 @@ private:
 
     std::unordered_map<std::string, StructLayout> structLayouts;
     void computeStructLayouts();
+    void allocateBlockVars(const Block& block);
 
     struct ImportEntry {
         std::string funcName;
@@ -204,6 +229,6 @@ private:
     uint32_t importDescCount = 1;
     uint32_t importDataSize = 0;
 
-    std::filesystem::path compilerDir;  // path to zenith.exe directory
-    std::filesystem::path outputDir;    // path to compiled exe/dll output directory
+    std::filesystem::path compilerDir;
+    std::filesystem::path outputDir;
 };

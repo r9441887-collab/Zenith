@@ -1,6 +1,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "codegen.h"
+#include "optimizer.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -8,9 +9,11 @@
 #include <vector>
 #include <algorithm>
 #include <filesystem>
+#include <cstdio>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <locale>
 
 namespace fs = std::filesystem;
 
@@ -34,21 +37,42 @@ static bool hasNoMain(const std::string& source) {
         if (c == '#') {
             size_t j = i + 1;
             while (j < source.size() && (source[j] == ' ' || source[j] == '\t')) j++;
-            if (source.substr(j, 8) == "[no_main]") return true;
+            if (source.substr(j, 9) == "[no_main]") return true;
+            // Also check for inline: "# [no_main]" anywhere on the line
+            while (j < source.size() && source[j] != '\n') {
+                if (source[j] == '[' && source.substr(j, 9) == "[no_main]") return true;
+                j++;
+            }
         }
     }
     return false;
 }
 
-static std::string readFile(const fs::path& path) {
-    std::ifstream f{path, std::ios::binary};
-    if (!f.is_open()) {
-        std::cerr << "Error: cannot open file '" << path.string() << "'" << std::endl;
+static std::string readFile(const std::string& path) {
+    // Use _wfopen to handle Cyrillic paths correctly on MinGW
+    std::wstring wpath;
+    {
+        int wlen = MultiByteToWideChar(CP_ACP, 0, path.c_str(), -1, NULL, 0);
+        if (wlen > 0) {
+            wpath.resize(wlen - 1);
+            MultiByteToWideChar(CP_ACP, 0, path.c_str(), -1, &wpath[0], wlen);
+        }
+    }
+    FILE* f = wpath.empty() ? nullptr : _wfopen(wpath.c_str(), L"rb");
+    if (!f) {
+        std::cerr << "Error: cannot open file '" << path << "'" << std::endl;
         exit(1);
     }
-    std::stringstream ss;
-    ss << f.rdbuf();
-    std::string content = ss.str();
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return ""; }
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return ""; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return ""; }
+    std::string content(sz, '\0');
+    if (sz > 0) {
+        size_t read = fread(&content[0], 1, sz, f);
+        content.resize(read);
+    }
+    fclose(f);
     // Strip UTF-8 BOM if present
     if (content.size() >= 3 &&
         (uint8_t)content[0] == 0xEF &&
@@ -74,7 +98,9 @@ static void printUsage() {
     std::cout << "Zenith Compiler v0.8.2" << std::endl;
     std::cout << "Usage:" << std::endl;
     std::cout << "  zenith <input.z> -o <output>       Compile a single file" << std::endl;
-    std::cout << "  zenith <input.z> --lib -o out.dll  Compile as DLL (library)" << std::endl;
+    std::cout << "  zenith <input.z> --lib -o out.dll  Compile as DLL (custom output)" << std::endl;
+    std::cout << "  zenith <input.z> --libs            Compile as DLL into libs/ folder" << std::endl;
+    std::cout << "  zenith <input.z> --embed           Embed system DLLs into output" << std::endl;
     std::cout << "  zenith new <name>                   Create a new project" << std::endl;
     std::cout << "  zenith new --lib <name>             Create a new DLL project" << std::endl;
     std::cout << "  zenith build                        Build project from workspace.zen" << std::endl;
@@ -260,6 +286,10 @@ static int cmdBuild(bool libMode = false) {
             }
         }
 
+        // Temp dir for intermediate DLLs
+        fs::path libDir = cwd / "lib";
+        fs::create_directories(libDir);
+
         // Collect all compiled DLL binaries
         struct DLLBinary {
             std::string name;
@@ -270,10 +300,10 @@ static int cmdBuild(bool libMode = false) {
         for (auto& file : sourceFiles) {
             std::string baseName = file.stem().string();
             std::string dllName = "libs_" + baseName + ".dll";
-            std::string dllPath = (exeDir / dllName).string();
+            std::string dllPath = (libDir / dllName).string();
 
             // Read source
-            std::string source = readFile(file);
+            std::string source = readFile(file.string());
             bool fileIsLib = hasNoMain(source);
 
             // Lex
@@ -344,8 +374,10 @@ static int cmdBuild(bool libMode = false) {
             std::cout << "Compiled: " << file << " -> " << dllName << std::endl;
         }
 
-        // Pack all DLLs into libs.dll
-        std::string libsPath = (exeDir / "libs.dll").string();
+        // Pack all DLLs into libs.dll (in compiler's libs/ folder, overwriting the stub)
+        fs::path libsDir = compilerPath / "libs";
+        fs::create_directories(libsDir);
+        std::string libsPath = (libsDir / "libs.dll").string();
         std::ofstream libsOut{fs::path(libsPath), std::ios::binary};
         if (!libsOut.is_open()) {
             std::cerr << "Error: cannot create libs.dll" << std::endl;
@@ -371,6 +403,24 @@ static int cmdBuild(bool libMode = false) {
         libsOut.close();
 
         std::cout << "Packed " << dllBinaries.size() << " DLLs into " << libsPath << std::endl;
+
+        // Delete individual .dll files after successful packing
+        for (auto& file : sourceFiles) {
+            std::string baseName = file.stem().string();
+            std::string dllName = "libs_" + baseName + ".dll";
+            fs::path dllPath = libDir / dllName;
+            if (fs::exists(dllPath)) {
+                fs::remove(dllPath);
+            }
+        }
+        // Remove temp lib/ dir if empty
+        if (fs::exists(libDir) && fs::is_directory(libDir)) {
+            bool empty = true;
+            for (auto& _ : fs::directory_iterator(libDir)) { empty = false; break; }
+            if (empty) fs::remove(libDir);
+        }
+        std::cout << "Cleaned up temporary DLL files" << std::endl;
+
         return 0;
     }
 
@@ -396,7 +446,7 @@ static int cmdBuild(bool libMode = false) {
     // Track which original file each combined line belongs to
     std::vector<std::string> lineSourceFile; // index = combined line (0-based)
     for (auto& file : sourceFiles) {
-        std::string content = readFile(file);
+        std::string content = readFile(file.string());
         if (hasNoMain(content)) combinedIsLib = true;
         std::string fileStr = file.string();
         if (!firstFile) {
@@ -409,7 +459,8 @@ static int cmdBuild(bool libMode = false) {
                 std::string trimmed = line;
                 size_t s = trimmed.find_first_not_of(" \t");
                 if (s != std::string::npos) trimmed = trimmed.substr(s);
-                if (trimmed == "app console" || trimmed == "app gui") continue;
+                if (trimmed == "app console" || trimmed == "app gui" ||
+                    trimmed.substr(0, 7) == "app gui") continue;
                 if (trimmed == "# [no_main]") continue;
                 if (!firstLine) filtered += "\n";
                 filtered += line;
@@ -422,6 +473,7 @@ static int cmdBuild(bool libMode = false) {
             combinedSource += content;
             int lines = 0;
             for (char c : content) { if (c == '\n') lines++; }
+            if (!content.empty() && content.back() != '\n') lines++;
             for (int i = 0; i < lines; i++) lineSourceFile.push_back(fileStr);
         }
         firstFile = false;
@@ -468,6 +520,17 @@ static int cmdBuild(bool libMode = false) {
     if (prog.functions.empty()) {
         std::cerr << "Error: no functions found in source" << std::endl;
         return 1;
+    }
+
+    // Optimize: remove unused functions and globals
+    Optimizer optimizer;
+    OptResult optResult = optimizer.optimize(prog);
+    for (auto& w : optResult.warnings) {
+        std::cerr << w << std::endl;
+    }
+    if (optResult.removedFunctions > 0 || optResult.removedGlobals > 0) {
+        std::cout << "Optimized: removed " << optResult.removedFunctions << " function(s), "
+                  << optResult.removedGlobals << " global(s)" << std::endl;
     }
 
     // Generate code
@@ -532,6 +595,8 @@ int main(int argc, char* argv[]) {
     std::string inputFile;
     std::string outputFile = "a.exe";
     bool libMode = false;
+    bool libsMode = false;
+    bool embedMode = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -541,6 +606,12 @@ int main(int argc, char* argv[]) {
         }
         if (arg == "--lib") {
             libMode = true;
+        } else if (arg == "--libs") {
+            libsMode = true;
+        } else if (arg == "--embed") {
+            embedMode = true;
+        } else if (arg == "--efi") {
+            // handled below
         } else if (arg == "-o" && i + 1 < argc) {
             outputFile = argv[++i];
         } else if (arg == "-o") {
@@ -559,6 +630,50 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: no input file specified" << std::endl;
         printUsage();
         return 1;
+    }
+
+    // --libs: compile DLL into <exe_dir>/libs/<basename>.dll
+    fs::path exeDir;
+    {
+        wchar_t exePathW[MAX_PATH] = {0};
+        GetModuleFileNameW(NULL, exePathW, MAX_PATH);
+        fs::path p(exePathW);
+        exeDir = p.has_parent_path() ? p.parent_path() : fs::current_path();
+    }
+
+    if (libsMode) {
+        libMode = true;
+        fs::path libsDir = exeDir / L"libs";
+        fs::create_directories(libsDir);
+        // Extract basename from input file using wide API to avoid encoding issues
+        std::wstring wInput;
+        {
+            // Convert input to wide using ACP (system codepage)
+            int wlen = MultiByteToWideChar(CP_ACP, 0, inputFile.c_str(), -1, NULL, 0);
+            if (wlen > 0) {
+                wInput.resize(wlen - 1);
+                MultiByteToWideChar(CP_ACP, 0, inputFile.c_str(), -1, &wInput[0], wlen);
+            } else {
+                // Fallback: try UTF-8
+                wlen = MultiByteToWideChar(CP_UTF8, 0, inputFile.c_str(), -1, NULL, 0);
+                if (wlen > 0) {
+                    wInput.resize(wlen - 1);
+                    MultiByteToWideChar(CP_UTF8, 0, inputFile.c_str(), -1, &wInput[0], wlen);
+                } else {
+                    wInput = L"output";
+                }
+            }
+        }
+        // Extract basename from wide path
+        fs::path wSrcPath(wInput);
+        std::wstring wBase = wSrcPath.stem().wstring();
+        fs::path outPath = libsDir / (wBase + L".dll");
+        // Convert output path to narrow using ACP (system codepage for std::ofstream)
+        int ulen = WideCharToMultiByte(CP_ACP, 0, outPath.c_str(), -1, NULL, 0, NULL, NULL);
+        if (ulen > 1) {
+            outputFile.resize(ulen - 1);
+            WideCharToMultiByte(CP_ACP, 0, outPath.c_str(), -1, &outputFile[0], ulen, NULL, NULL);
+        }
     }
 
     // Read source
@@ -595,27 +710,30 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    prog.isLibrary = sourceIsLib;
+    prog.isLibrary = sourceIsLib || libMode;
 
     if (prog.functions.empty()) {
         std::cerr << "Error: no functions found in source" << std::endl;
         return 1;
     }
 
+    // Optimize: remove unused functions and globals
+    Optimizer optimizer;
+    OptResult optResult = optimizer.optimize(prog);
+    for (auto& w : optResult.warnings) {
+        std::cerr << w << std::endl;
+    }
+    if (optResult.removedFunctions > 0 || optResult.removedGlobals > 0) {
+        std::cout << "Optimized: removed " << optResult.removedFunctions << " function(s), "
+                  << optResult.removedGlobals << " global(s)" << std::endl;
+    }
+
     // Generate code
     Codegen codegen(prog);
-    {
-        wchar_t exePathW[MAX_PATH] = {0};
-        GetModuleFileNameW(NULL, exePathW, MAX_PATH);
-        fs::path p(exePathW);
-        if (p.has_parent_path()) {
-            codegen.setCompilerDir(p.parent_path().string());
-        } else {
-            codegen.setCompilerDir(fs::current_path().string());
-        }
-    }
+    codegen.setCompilerDir(exeDir);
     codegen.isLibrary = sourceIsLib || libMode;
     codegen.libOutput = libMode;
+    codegen.embedDLLs = embedMode;
     try {
         codegen.generate(outputFile);
     } catch (const std::exception& e) {

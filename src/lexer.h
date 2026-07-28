@@ -5,12 +5,13 @@
 
 enum class TokenKind {
     Func, Var, Let, If, Else, While, For, Return, End, True, False, Import,
-    Struct, Extern, App, From,
+    Struct, Extern, App, From, Type,
     TypeInt, TypeFloat, TypeBool, TypeString, TypeVoid,
     TypeVec2, TypeVec3, TypeColor, TypeEntity,
     Ident, Number, FloatLit, StringLit,
     Plus, Minus, Star, Slash, Dot, Bang,
     Eq, EqEq, NotEq, Lt, Gt, LtEq, GtEq, Arrow,
+    AmpAmp, PipePipe,
     LParen, RParen, LBrace, RBrace, LBrack, RBrack,
     Comma, Colon, At, Newline, Eof, Error
 };
@@ -18,10 +19,10 @@ enum class TokenKind {
 struct Token {
     TokenKind kind;
     std::string text;
-    int64_t intVal;
-    double floatVal;
-    int line;
-    int col;
+    int64_t intVal = 0;
+    double floatVal = 0.0;
+    int line = 0;
+    int col = 0;
 };
 
 class Lexer {

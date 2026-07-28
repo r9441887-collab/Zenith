@@ -43,6 +43,10 @@ Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntex
 Source: "AGENTS.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "src\*"; DestDir: "{app}\src"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 Source: "examples\*.z"; DestDir: "{app}\examples"; Flags: ignoreversion recursesubdirs
+Source: "libs\libs.dll"; DestDir: "{app}\libs"; Flags: ignoreversion
+
+[Dirs]
+Name: "{app}\libs"; Flags: uninsalwaysuninstall
 
 [Icons]
 Name: "{group}\{#MyAppName} {#MyAppVersion}"; Filename: "{app}\{#MyAppExeName}"

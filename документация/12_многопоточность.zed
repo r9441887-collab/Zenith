@@ -1,0 +1,190 @@
+# Многопоточность
+
+## Подключение
+
+```zenith
+@import("libs.dll::thread")
+
+extern func threadCreate(fn: int, arg: int) -> int
+extern func threadJoin(handle: int) -> int
+extern func threadSleepMs(ms: int) -> void
+extern func threadGetId() -> int
+extern func threadEqual(a: int, b: int) -> int
+```
+
+## Основные функции
+
+### threadCreate(fn, arg) -> handle
+
+Создаёт новый поток.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `fn` | int | Указатель на функцию-воркер |
+| `arg` | int | Аргумент, передаваемый в воркер |
+
+**Важно:** `fn` передаётся как `int` (указатель на функцию).
+Компилятор преобразует имя функции в адрес.
+
+### threadJoin(handle)
+
+Блокируется до завершения потока.
+
+### threadSleepMs(ms)
+
+Приостанавливает поток на N миллисекунд.
+
+### threadGetId() -> int
+
+Возвращает ID текущего потока.
+
+## Паттерн: воркер с shared memory
+
+```zenith
+app gui
+
+@import("libs.dll::thread")
+
+extern func threadCreate(fn: int, arg: int) -> int
+extern func threadJoin(handle: int) -> int
+extern func threadSleepMs(ms: int) -> void
+
+func worker(shared: int) -> int
+    while peek(shared + 40) == 0      # пока нет флага выхода
+        var val: int = peek(shared)    # прочитать данные
+        poke(shared + 8, val * 2)      # записать результат
+        threadSleepMs(16)
+    end
+    return 0
+end
+
+func main() -> int
+    var shared: int = alloc(64)        # shared memory
+    poke(shared, 21)                   # входные данные
+    poke(shared + 40, 0)              # флаг выхода = 0
+
+    var t: int = threadCreate(worker, shared)
+
+    # Основной поток работает...
+    var i: int = 0
+    while i < 100
+        var result: int = peek(shared + 8)
+        print(result)
+        threadSleepMs(50)
+        i = i + 1
+    end
+
+    poke(shared + 40, 1)              # сигнал на выход
+    threadJoin(t)                      # дождаться завершения
+    return 0
+end
+```
+
+## Паттерн: два врага в игре
+
+```zenith
+app gui
+
+@import("libs.dll::thread")
+
+extern func threadCreate(fn: int, arg: int) -> int
+extern func threadJoin(handle: int) -> int
+extern func threadSleepMs(ms: int) -> void
+
+# Shared memory layout:
+# offset  0: playerX
+# offset  8: playerY
+# offset 16: enemyX
+# offset 24: enemyY
+# offset 40: quit flag
+
+func aiChaser(shared: int) -> int
+    var ex: int = 350
+    var ey: int = 250
+
+    while peek(shared + 40) == 0
+        var px: int = peek(shared)
+        var py: int = peek(shared + 8)
+
+        if px < ex
+            ex = ex - 1
+        end
+        if px > ex
+            ex = ex + 1
+        end
+        if py < ey
+            ey = ey - 1
+        end
+        if py > ey
+            ey = ey + 1
+        end
+
+        poke(shared + 16, ex)
+        poke(shared + 24, ey)
+        threadSleepMs(30)
+    end
+    return 0
+end
+
+func main() -> int
+    var shared: int = alloc(64)
+    poke(shared, 200)        # playerX
+    poke(shared + 8, 150)    # playerY
+    poke(shared + 40, 0)     # quit = 0
+
+    var ai: int = threadCreate(aiChaser, shared)
+
+    while getKey(27) == 0
+        # ... рисование ...
+        present()
+    end
+
+    poke(shared + 40, 1)     # сигнал выхода
+    threadJoin(ai)
+    return 0
+end
+```
+
+## Shared memory
+
+Потоки общаются через `alloc` + `poke`/`peek`:
+
+```zenith
+var shared: int = alloc(64)    # выделить блок
+
+# Запись из основного потока:
+poke(shared, value)
+
+# Чтение из воркера:
+var val: int = peek(shared)
+```
+
+**Нет блокировок** — это lock-free общение.
+Подходит для простых случаев (флаги, позиции, счётчики).
+Для сложных сценариев используйте `libs.dll::mutex`.
+
+## Очистка
+
+Всегда завершайте потоки перед выходом:
+
+```zenith
+# 1. Сигнал на выход
+poke(shared + quitOffset, 1)
+
+# 2. Дождаться завершения
+threadJoin(handle)
+```
+
+Без `threadJoin` поток может работать после завершения main.
+
+## Тайминг
+
+Для ~60 FPS используйте `threadSleepMs(16)`:
+
+```zenith
+while getKey(27) == 0
+    # ... обновление + рисование ...
+    present()
+    threadSleepMs(16)    # ~60 FPS
+end
+```
