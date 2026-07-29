@@ -334,10 +334,10 @@ uint32_t Codegen::estimateDataSize() {
     if (prog.appType == AppType::EFI) {
         return 0x100; // Minimal data section for EFI
     }
-    // ILT + IAT for each DLL, heap (64KB), globals, heap offset
+    // ILT + IAT for each DLL, globals, heap offset
     uint32_t total = 0x400; // IAT/ILT entries
     total += 8;  // heap offset
-    total += 64 * 1024; // heap
+    // heap area is in .bss (no .data space needed)
     if (prog.appType == AppType::GUI) {
         total += (prog.renderType == RenderType::DX11) ? 128 : 64; // win32 globals
     }
@@ -396,7 +396,7 @@ void Codegen::fixupSectionRVAs() {
             wrDW(rdata, base + 16, iat + dData);
         }
 
-        // 2. Fix ILT/IAT entries in .data (8-byte RVAs to hint/name entries in .rdata)
+        // 3. Fix ILT/IAT entries in .data (8-byte RVAs to hint/name entries in .rdata)
         for (uint32_t i = 0; i < importDataSize; i += 8) {
             uint64_t val = rdDQ(data, i);
             if (val != 0) {
@@ -416,7 +416,7 @@ void Codegen::fixupSectionRVAs() {
     for (auto& hf : heapFixups) {
         if (hf.targetRVA >= oldRdataRVA && hf.targetRVA < oldRdataRVA + rdataSize) {
             hf.targetRVA += dRdata;
-        } else if (hf.targetRVA >= oldDataRVA && hf.targetRVA < oldDataRVA + dataSize) {
+        } else if (hf.targetRVA >= oldDataRVA && hf.targetRVA <= oldDataRVA + dataSize) {
             hf.targetRVA += dData;
         }
     }
@@ -427,6 +427,7 @@ void Codegen::fixupSectionRVAs() {
         classNameRVA += dRdata;
     }
     heapOffsetRVA += dData;
+    heapFreeHeadRVA += dData;
     heapAreaRVA += dData;
     if (prog.appType == AppType::GUI) {
         win32GlobalsRVA += dData;
@@ -1084,35 +1085,22 @@ void Codegen::buildImportData() {
 
     importDataSize = (uint32_t)data.size();
 
-    // Heap — bump allocator state + 64KB heap area
-    heapOffsetRVA = dataRVA + (uint32_t)data.size();
-    for (int k = 0; k < 8; k++) data.push_back(0);
-    heapAreaRVA = dataRVA + (uint32_t)data.size();
-    for (int k = 0; k < 64 * 1024; k++) data.push_back(0);
-
     // Win32 globals for 2D graphics built-ins (GUI only)
     if (prog.appType == AppType::GUI) {
         win32GlobalsRVA = dataRVA + (uint32_t)data.size();
         if (prog.renderType == RenderType::DX11) {
             // DX11 globals: 128 bytes
-            // [0]=initFlag [8]=hwnd [16]=reserved [24]=reserved
-            // [32]=width [36]=height [40]=framebuf [48]=pad
-            // [56]=ID3D11Device* [64]=ID3D11DeviceContext*
-            // [72]=IDXGISwapChain* [80]=ID3D11RenderTargetView*
-            // [88]=ID3D11Texture2D*(staging) [96..127]=reserved
             for (int k = 0; k < 128; k++) data.push_back(0);
         } else {
-            // Software globals: 56 bytes (legacy layout)
-            // initFlag(8), hwnd(8), hdc(8), memDC(8), framebuf(8), width(4), height(4), pad(8)
+            // Software globals: 56 bytes
             for (int k = 0; k < 56; k++) data.push_back(0);
         }
     }
 
     // === EMBEDDED DLL: .data entries ===
     if (!embeddedDLLs.empty()) {
-        // Loader scratch buffers
         embeddedFullPathRVA = dataRVA + (uint32_t)data.size();
-        for (int k = 0; k < 520; k++) data.push_back(0); // fullPath temp buffer
+        for (int k = 0; k < 520; k++) data.push_back(0);
         embeddedHFileRVA = dataRVA + (uint32_t)data.size();
         for (int k = 0; k < 8; k++) data.push_back(0);
         embeddedHModuleRVA = dataRVA + (uint32_t)data.size();
@@ -1120,13 +1108,11 @@ void Codegen::buildImportData() {
         embeddedWrittenRVA = dataRVA + (uint32_t)data.size();
         for (int k = 0; k < 8; k++) data.push_back(0);
 
-        // For each embedded DLL: store raw bytes + pointer slots
         for (auto& emb : embeddedDLLs) {
             emb.blobRVA = dataRVA + (uint32_t)data.size();
             data.insert(data.end(), emb.bytes.begin(), emb.bytes.end());
             while (data.size() % 8 != 0) data.push_back(0);
 
-            // Pointer slots for each function (8 bytes each, init to 0)
             emb.funcPtrRVAs.clear();
             for (auto& fn : emb.funcs) {
                 uint32_t slotRVA = dataRVA + (uint32_t)data.size();
@@ -1135,12 +1121,27 @@ void Codegen::buildImportData() {
             }
         }
 
-        // Map embedded function names to their pointer slot RVAs in externFuncMap
         for (auto& emb : embeddedDLLs) {
             for (size_t f = 0; f < emb.funcs.size(); f++) {
                 externFuncMap[emb.funcs[f].name] = {"EMBEDDED_" + emb.dllName, emb.funcPtrRVAs[f]};
             }
         }
+    }
+
+    // Heap offset (8 bytes in .data) — bump allocator state
+    heapOffsetRVA = dataRVA + (uint32_t)data.size();
+    for (int k = 0; k < 8; k++) data.push_back(0);
+    // Heap free list head (8 bytes in .data) — 0 = no free blocks
+    heapFreeHeadRVA = dataRVA + (uint32_t)data.size();
+    for (int k = 0; k < 8; k++) data.push_back(0);
+    // Heap area RVA — points to .bss (zero-init at runtime, no file space)
+    heapAreaRVA = dataRVA + (uint32_t)data.size();
+
+    // Replace heap fixup sentinels with actual RVAs (fixups were emitted before RVAs were known)
+    for (auto& hf : heapFixups) {
+        if (hf.targetRVA == 0xFFFFFF00) hf.targetRVA = heapAreaRVA;
+        else if (hf.targetRVA == 0xFFFFFE00) hf.targetRVA = heapFreeHeadRVA;
+        else if (hf.targetRVA == 0xFFFFFD00) hf.targetRVA = heapOffsetRVA;
     }
 }
 
@@ -1216,16 +1217,28 @@ void Codegen::buildPE(const std::string& outputPath) {
     uint32_t rdataRawSize = (rdataSize + 0x1FF) & ~0x1FF;
     uint32_t dataRawSize = (dataSize + 0x1FF) & ~0x1FF;
 
-    uint32_t textRawOfs = 0x200;
-    uint32_t rdataRawOfs = textRawOfs + textRawSize;
-    uint32_t dataRawOfs = rdataRawOfs + rdataRawSize;
-
     DOSHeader dos;
     IMAGE_FILE_HEADER coff;
     IMAGE_OPTIONAL_HEADER64 opt = {};
 
+    // Heap area resides in .bss (zero bytes on disk, zero-initialized in memory)
+    uint32_t rawDataEnd = dataRVA + dataSize;
+    uint32_t bssSize = 64 * 1024;
+    uint32_t bssRVA = (rawDataEnd + 0xFFF) & ~0xFFF;
+
+    // Snap heapAreaRVA to .bss start and adjust fixups
+    if (heapAreaRVA != bssRVA) {
+        int32_t bssDelta = (int32_t)(bssRVA - heapAreaRVA);
+        for (auto& hf : heapFixups) {
+            if (hf.targetRVA == heapAreaRVA) {
+                hf.targetRVA += bssDelta;
+            }
+        }
+        heapAreaRVA = bssRVA;
+    }
+
     coff.Machine = 0x8664;
-    coff.NumberOfSections = 3;
+    coff.NumberOfSections = 4;
     coff.SizeOfOptionalHeader = sizeof(opt);
 
     if (isEfi) {
@@ -1251,11 +1264,18 @@ void Codegen::buildPE(const std::string& outputPath) {
     uint32_t textEnd = textRVA + ((textSize + 0xFFF) & ~0xFFF);
     uint32_t rdataEnd = rdataRVA + ((rdataSize + 0xFFF) & ~0xFFF);
     uint32_t dataEnd = dataRVA + ((dataSize + 0xFFF) & ~0xFFF);
-    uint32_t lastSectionEnd = dataEnd;
+    uint32_t bssEnd = bssRVA + ((bssSize + 0xFFF) & ~0xFFF);
+    uint32_t lastSectionEnd = bssEnd;
+    if (dataEnd > lastSectionEnd) lastSectionEnd = dataEnd;
     if (rdataEnd > lastSectionEnd) lastSectionEnd = rdataEnd;
     if (textEnd > lastSectionEnd) lastSectionEnd = textEnd;
     opt.SizeOfImage = (lastSectionEnd + 0xFFF) & ~0xFFF;
-    opt.SizeOfHeaders = 0x200;
+    // Compute raw offsets after COFF/opt fields are populated
+    uint32_t headerRawSize = (dos.e_lfanew + 4 + sizeof(coff) + sizeof(opt) + coff.NumberOfSections * sizeof(IMAGE_SECTION_HEADER) + 0x1FF) & ~0x1FF;
+    uint32_t textRawOfs = headerRawSize;
+    uint32_t rdataRawOfs = textRawOfs + textRawSize;
+    uint32_t dataRawOfs = rdataRawOfs + rdataRawSize;
+    opt.SizeOfHeaders = headerRawSize;
 
     // Import directory entry — point to descriptors in .rdata
     // EFI has no imports, skip import directory
@@ -1271,7 +1291,7 @@ void Codegen::buildPE(const std::string& outputPath) {
         opt.DataDirectory[0].Size = exportDirSize;
     }
 
-    IMAGE_SECTION_HEADER textSec{}, rdataSec{}, dataSec{};
+    IMAGE_SECTION_HEADER textSec{}, rdataSec{}, dataSec{}, bssSec{};
 
     memcpy(textSec.Name, ".text", 6);
     textSec.VirtualSize = textSize;
@@ -1294,6 +1314,13 @@ void Codegen::buildPE(const std::string& outputPath) {
     dataSec.PointerToRawData = dataRawOfs;
     dataSec.Characteristics = 0xC0000040;
 
+    memcpy(bssSec.Name, ".bss", 5);
+    bssSec.VirtualSize = bssSize;
+    bssSec.VirtualAddress = bssRVA;
+    bssSec.SizeOfRawData = 0;
+    bssSec.PointerToRawData = 0;
+    bssSec.Characteristics = 0xC0000080;
+
     std::ofstream f{safeNarrowToPath(outputPath), std::ios::binary};
     f.write((const char*)&dos, sizeof(dos));
 
@@ -1309,8 +1336,9 @@ void Codegen::buildPE(const std::string& outputPath) {
     f.write((const char*)&textSec, sizeof(textSec));
     f.write((const char*)&rdataSec, sizeof(rdataSec));
     f.write((const char*)&dataSec, sizeof(dataSec));
+    f.write((const char*)&bssSec, sizeof(bssSec));
 
-    size_t hEnd = dos.e_lfanew + 4 + sizeof(coff) + sizeof(opt) + sizeof(textSec) + sizeof(rdataSec) + sizeof(dataSec);
+    size_t hEnd = dos.e_lfanew + 4 + sizeof(coff) + sizeof(opt) + sizeof(textSec) + sizeof(rdataSec) + sizeof(dataSec) + sizeof(bssSec);
     while (hEnd < textRawOfs) { f.put(0); hEnd++; }
 
     f.write((const char*)code.data(), code.size());

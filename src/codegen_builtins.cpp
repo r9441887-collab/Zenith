@@ -14,27 +14,66 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         regsUsed = 0;
         int sizeReg = emitExpr(call->args[0].get());
         if (sizeReg != 1) { emitMovReg(1, sizeReg); freeReg(sizeReg); sizeReg = 1; }
+        // rcx = size
+        // totalSize = ((size + 15) & ~15) + 16
+        emit8(0x48); emit8(0x83); emit8(0xC1); emit8(15);  // add rcx, 15
+        emit8(0x48); emit8(0x83); emit8(0xE1); emit8(0xF0); // and rcx, -16
+        emit8(0x48); emit8(0x83); emit8(0xC1); emit8(16);  // add rcx, 16
+        emit8(0x48); emit8(0x89); emit8(0xCB);  // mov rbx, rcx (save totalSize)
+
         emit8(0x48); emit8(0x8D); emit8(0x05);
-        heapFixups.push_back({code.size(), heapAreaRVA}); emit32(0);
-        emit8(0x48); emit8(0x8B); emit8(0x15);
-        heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
-        emit8(0x49); emit8(0x89); emit8(0xC8);
-        emit8(0x48); emit8(0x03); emit8(0xCA);
-        emit8(0x48); emit8(0x81); emit8(0xF9);
-        emit32(64 * 1024);
+        heapFixups.push_back({code.size(), heapAreaRVA}); emit32(0);  // rax = heapArea
+
+        int bumpLabel = newLabel();
         int failLabel = newLabel();
-        emit8(0x0F); emit8(0x87);
-        jmpFixups.push_back({code.size(), failLabel});
-        emit32(0);
-        emit8(0x48); emit8(0x89); emit8(0x0D);
-        heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
-        emit8(0x48); emit8(0x03); emit8(0xC2);
         int doneLabel = newLabel();
+
+        // Check free list
+        emit8(0x48); emit8(0x8B); emit8(0x15);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0);  // rdx = freeHead
+        emit8(0x48); emit8(0x85); emit8(0xD2);  // test rdx, rdx
+        emit8(0x0F); emit8(0x84);  // je bumpLabel
+        jmpFixups.push_back({code.size(), bumpLabel}); emit32(0);
+
+        emit8(0x48); emit8(0x8B); emit8(0x4A); emit8(8);  // mov rcx, [rdx+8] (blockSize)
+        emit8(0x48); emit8(0x39); emit8(0xD9);  // cmp rcx, rbx
+        emit8(0x0F); emit8(0x82);  // jb bumpLabel (blockSize < totalSize)
+        jmpFixups.push_back({code.size(), bumpLabel}); emit32(0);
+
+        // Use this free block — remove from free list
+        emit8(0x48); emit8(0x8B); emit8(0x0A);  // mov rcx, [rdx] (nextFree)
+        emit8(0x48); emit8(0x89); emit8(0x0D);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0);  // freeHead = nextFree
+
+        emit8(0x31); emit8(0xC9);  // xor ecx, ecx
+        emit8(0x48); emit8(0x89); emit8(0x0A);  // mov [rdx], rcx (mark in-use)
+        emit8(0x48); emit8(0x8D); emit8(0x42); emit8(0x10);  // lea rax, [rdx+16]
         emitJmp(doneLabel);
+
+        // Bump allocate
+        emitLabel(bumpLabel);
+        emit8(0x48); emit8(0x8B); emit8(0x15);
+        heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);  // rdx = offset
+        emit8(0x48); emit8(0x89); emit8(0xD1);  // mov rcx, rdx
+        emit8(0x48); emit8(0x01); emit8(0xD9);  // add rcx, rbx (newOffset)
+        emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
+        emit8(0x0F); emit8(0x87);
+        jmpFixups.push_back({code.size(), failLabel}); emit32(0);
+
+        emit8(0x48); emit8(0x89); emit8(0x0D);
+        heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);  // store newOffset
+
+        // Store totalSize at [heapArea + offset + 8]
+        emit8(0x48); emit8(0x89); emit8(0x5C); emit8(0x10); emit8(8);  // mov [rax+rdx+8], rbx
+
+        // Return heapArea + offset + 16
+        emit8(0x48); emit8(0x8D); emit8(0x44); emit8(0x10); emit8(16);  // lea rax, [rax+rdx+16]
+        emitJmp(doneLabel);
+
         emitLabel(failLabel);
-        emit8(0x48); emit8(0x31); emit8(0xC0);
+        emit8(0x48); emit8(0x31); emit8(0xC0);  // xor eax, eax
         emitLabel(doneLabel);
-        freeReg(1); freeReg(2);
+        freeReg(1); freeReg(2); freeReg(3);
         regsUsed = (uint8_t)saved;
         reloadRegs();
         int r = allocReg(); if (r != 0) { emitMovReg(r, 0); freeReg(0); }
@@ -43,11 +82,17 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
     }
     if (call->name == "free" && call->args.size() == 1) {
         int r = emitExpr(call->args[0].get());
-        freeReg(r);
+        if (r != 1) { emitMovReg(1, r); freeReg(r); }
         regsUsed = 0;
-        int result = allocReg(); if (result < 0) result = 0;
-        emitMovRegImm(result, 0);
-        resultReg = result;
+        // rcx = ptr
+        emit8(0x48); emit8(0x8D); emit8(0x41); emit8(0xF0);  // lea rax, [rcx-16] (blockStart)
+        emit8(0x48); emit8(0x8B); emit8(0x15);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0);  // rdx = old freeHead
+        emit8(0x48); emit8(0x89); emit8(0x10);  // mov [rax], rdx (link to free list)
+        emit8(0x48); emit8(0x89); emit8(0x05);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0);  // freeHead = blockStart
+        emitMovRegImm(0, 0);
+        resultReg = 0;
         return true;
     }
 
@@ -57,20 +102,25 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
     auto emitHeapAlloc = [this](int sizeReg) {
         if (sizeReg != 1) { emitMovReg(1, sizeReg); freeReg(sizeReg); }
         // rcx = size
-        emitMovReg(0, 1);
-        emit8(0x48); emit8(0x89); emit8(0xC1); // mov rcx, rax
+        emit8(0x48); emit8(0x83); emit8(0xC1); emit8(15);  // add rcx, 15
+        emit8(0x48); emit8(0x83); emit8(0xE1); emit8(0xF0); // and rcx, -16
+        emit8(0x48); emit8(0x83); emit8(0xC1); emit8(16);  // add rcx, 16 (header)
+        // rcx = totalSize
         emit8(0x48); emit8(0x8D); emit8(0x05);
-        heapFixups.push_back({code.size(), heapAreaRVA}); emit32(0);
+        heapFixups.push_back({code.size(), heapAreaRVA}); emit32(0);  // rax = heapArea
         emit8(0x48); emit8(0x8B); emit8(0x15);
-        heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
-        emit8(0x49); emit8(0x89); emit8(0xC0); // r8 = rax (old offset)
-        emit8(0x48); emit8(0x03); emit8(0xCA); // rcx = old_offset + size
+        heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);  // rdx = offset
+        emit8(0x49); emit8(0x89); emit8(0xC0); // r8 = rax (save heapArea)
+        emit8(0x48); emit8(0x03); emit8(0xCA); // rcx = totalSize + offset = newOffset
         emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
         int fl = newLabel();
         emit8(0x0F); emit8(0x87); jmpFixups.push_back({code.size(), fl}); emit32(0);
         emit8(0x48); emit8(0x89); emit8(0x0D);
         heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
-        emit8(0x48); emit8(0x03); emit8(0xC2); // rax = heapArea + old_offset
+        // rcx = newOffset, rdx = old_offset, r8 = heapArea
+        emit8(0x48); emit8(0x29); emit8(0xD1); // sub rcx, rdx (totalSize = newOffset - oldOffset)
+        emit8(0x49); emit8(0x89); emit8(0x4C); emit8(0x10); emit8(8); // mov [r8+rdx+8], rcx
+        emit8(0x49); emit8(0x8D); emit8(0x44); emit8(0x10); emit8(16); // lea rax, [r8+rdx+16]
         int dl = newLabel(); emitJmp(dl);
         emitLabel(fl); emit8(0x48); emit8(0x31); emit8(0xC0); // xor rax, rax (fail=0)
         emitLabel(dl);
@@ -164,11 +214,17 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         return true;
     }
 
-    // arenaDestroy(arena) -> void (no-op for bump allocator)
+    // arenaDestroy(arena) -> void (free the arena block back to heap)
     if (call->name == "arenaDestroy" && call->args.size() == 1) {
         int r = emitExpr(call->args[0].get());
-        freeReg(r);
-        regsUsed = 1;
+        if (r != 1) { emitMovReg(1, r); freeReg(r); }
+        regsUsed = 0;
+        emit8(0x48); emit8(0x8D); emit8(0x41); emit8(0xF0); // lea rax, [rcx-16] (blockStart)
+        emit8(0x48); emit8(0x8B); emit8(0x15);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0); // rdx = old freeHead
+        emit8(0x48); emit8(0x89); emit8(0x10); // mov [rax], rdx (link to free list)
+        emit8(0x48); emit8(0x89); emit8(0x05);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0); // freeHead = blockStart
         emitMovRegImm(0, 0);
         resultReg = 0;
         return true;
@@ -325,21 +381,27 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         emit8(0x51); // push rcx (dataSize)
         emit8(0x48); emit8(0x83); emit8(0xC1); emit8(16); // stride = dataSize+16
         emitImul(1, 3); // rcx *= maxCount
-        emit8(0x48); emit8(0x83); emit8(0xC1); emit8(32); // +32 header
-        // Heap alloc via RIP-relative (same as alloc builtin)
+        // +32 slot header, align to 16, +16 block header
+        emit8(0x48); emit8(0x83); emit8(0xC1); emit8(32 + 15); // add rcx, 47
+        emit8(0x48); emit8(0x83); emit8(0xE1); emit8(0xF0);    // and rcx, -16
+        emit8(0x48); emit8(0x83); emit8(0xC1); emit8(16);      // add rcx, 16 (block header)
+        // rcx = totalSize
         emit8(0x48); emit8(0x8D); emit8(0x05);
         heapFixups.push_back({code.size(), heapAreaRVA}); emit32(0);
         emit8(0x48); emit8(0x8B); emit8(0x15);
         heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
-        emit8(0x49); emit8(0x89); emit8(0xC8);
-        emit8(0x48); emit8(0x03); emit8(0xCA);
+        emit8(0x49); emit8(0x89); emit8(0xC0); // mov r8, rax (save heapArea)
+        emit8(0x48); emit8(0x03); emit8(0xCA); // rcx = totalSize + offset = newOffset
         emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
         int scFail = newLabel();
         emit8(0x0F); emit8(0x87);
         jmpFixups.push_back({code.size(), scFail}); emit32(0);
         emit8(0x48); emit8(0x89); emit8(0x0D);
         heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
-        emit8(0x48); emit8(0x03); emit8(0xC2);
+        // rcx = newOffset, rdx = old_offset, r8 = heapArea
+        emit8(0x48); emit8(0x29); emit8(0xD1); // sub rcx, rdx (totalSize)
+        emit8(0x49); emit8(0x89); emit8(0x4C); emit8(0x10); emit8(8); // mov [r8+rdx+8], totalSize
+        emit8(0x49); emit8(0x8D); emit8(0x44); emit8(0x10); emit8(16); // lea rax, [r8+rdx+16]
         int scDone = newLabel();
         emitJmp(scDone);
         emitLabel(scFail);
@@ -655,11 +717,17 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         return true;
     }
 
-    // slotDestroy(slot) -> void (no-op)
+    // slotDestroy(slot) -> void (free the slot block back to heap)
     if (call->name == "slotDestroy" && call->args.size() == 1) {
         int r = emitExpr(call->args[0].get());
-        freeReg(r);
-        regsUsed = 1;
+        if (r != 1) { emitMovReg(1, r); freeReg(r); }
+        regsUsed = 0;
+        emit8(0x48); emit8(0x8D); emit8(0x41); emit8(0xF0); // lea rax, [rcx-16]
+        emit8(0x48); emit8(0x8B); emit8(0x15);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0);
+        emit8(0x48); emit8(0x89); emit8(0x10); // mov [rax], rdx
+        emit8(0x48); emit8(0x89); emit8(0x05);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0);
         emitMovRegImm(0, 0);
         resultReg = 0;
         return true;

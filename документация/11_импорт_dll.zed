@@ -29,11 +29,14 @@ extern func MyFunc(a: int) -> int from "mylib.dll"
 |---------|-----|
 | `ExitProcess`, `GetStdHandle`, `WriteFile`, `ReadFile`, `Sleep`, `HeapAlloc`, `HeapFree`, `GetProcessHeap`, `GetModuleHandleA` | `kernel32.dll` |
 | `CreateWindowExA`, `DefWindowProcA`, `RegisterClassExA`, `DestroyWindow`, `GetDC`, `ReleaseDC`, `PeekMessageA`, `TranslateMessage`, `DispatchMessageA`, `GetAsyncKeyState`, `PostQuitMessage`, `ShowWindow`, `UpdateWindow` | `user32.dll` |
-| `CreateDIBSection`, `BitBlt`, `SelectObject`, `CreateCompatibleDC`, `DeleteObject` | `gdi32.dll` |
+| `CreateDIBSection`, `BitBlt`, `SelectObject`, `CreateCompatibleDC`, `DeleteObject`, `DeleteDC` | `gdi32.dll` |
 | `D3D11CreateDevice`, `D3D11CreateDeviceAndSwapChain` | `d3d11.dll` |
 | `CreateDXGIFactory` | `dxgi.dll` |
 | `D3DCompileFromFile` | `d3dcompiler_47.dll` |
-| `threadCreate`, `threadJoin`, `threadSleepMs` | `libs_thread.dll` |
+| `threadCreate`, `threadJoin`, `threadSleepMs`, `threadGetId`, `threadEqual` | `libs.dll` (через `::thread`) |
+| `mutexCreate`, `mutexLock`, `mutexUnlock`, `mutexDestroy` | `libs.dll` (через `::mutex`) |
+| `asyncRun`, `asyncWait`, `asyncGet` | `libs.dll` (через `::async`) |
+| `poolCreate`, `poolSubmit`, `poolWaitAll`, `poolDestroy` | `libs.dll` (через `::threadpool`) |
 | Остальные | `kernel32.dll` |
 
 ## Как это работает
@@ -157,14 +160,20 @@ zenith --embed myapp.z -o myapp.exe
 
 ## libs.dll — системные библиотеки
 
-Для многопоточности и асинхронности:
+Единая библиотека для многопоточности и синхронизации.
+Собирается из C-исходников в `libs/thread/` и поставляется с компилятором.
 
 ```zenith
-@import("libs.dll::thread")       # потоки
-@import("libs.dll::mutex")        # мьютексы
-@import("libs.dll::async")        # асинхронные задачи
+@import("libs.dll::thread")       # потоки (create, join, sleep, yield)
+@import("libs.dll::mutex")        # мьютексы + conditional variables
+@import("libs.dll::async")        # асинхронные задачи (futures)
 @import("libs.dll::threadpool")   # пул потоков
 
 # Или всё сразу:
 @import("libs.dll")
 ```
+
+### Установка
+
+`libs.dll` автоматически устанавливается в `{app}/libs/` при установке через Installer.
+При компиляции с `--embed` библиотека встраивается прямо в .exe.

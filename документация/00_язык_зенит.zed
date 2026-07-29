@@ -69,8 +69,10 @@ zenith examples/main.z -o game.exe
 - Никаких внешних зависимостей (нет runtime, нет libc)
 - Прямая генерация x86_64 машинного кода
 - Windows PE формат (.exe / .dll)
-- Встроенные аллокаторы памяти
-- 2D-графика через software rendering
+- Встроенные аллокаторы памяти (bump, arena, pool, slot)
+- 2D-графика через software rendering (GDI)
 - DirectX 11 для аппаратного рендеринга
-- Многопоточность через DLL
+- Многопоточность через libs.dll (thread, mutex, async, pool)
+- Модульная DLL-система с `@import` и `--embed`
 - Оптимизатор (Dead Code Elimination)
+- Multi-file проекты через `zenith build`

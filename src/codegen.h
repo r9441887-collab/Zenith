@@ -171,8 +171,9 @@ private:
 
     struct HeapFixup { size_t codePos; uint32_t targetRVA; };
     std::vector<HeapFixup> heapFixups;
-    uint32_t heapOffsetRVA = 0;
-    uint32_t heapAreaRVA = 0;
+    uint32_t heapOffsetRVA = 0xFFFFFD00;
+    uint32_t heapFreeHeadRVA = 0xFFFFFE00;
+    uint32_t heapAreaRVA = 0xFFFFFF00;
     uint32_t win32GlobalsRVA = 0;
 
     size_t wndProcOffset = 0;

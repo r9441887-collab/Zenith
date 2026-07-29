@@ -26,37 +26,37 @@ void Codegen::emitDX11Init() {
 
     // Fill DXGI_SWAP_CHAIN_DESC at [rsp+0x80]
     emit8(0x8B); emit8(0x43); emit8(0x20);             // eax = width
-    emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x80); // Width
+    emit8(0x89); emit8(0x84); emit8(0x24); emit32(0x80); // Width
     emit8(0x8B); emit8(0x43); emit8(0x24);             // eax = height
-    emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x84); // Height
+    emit8(0x89); emit8(0x84); emit8(0x24); emit32(0x84); // Height
     // RefreshRate = {0,0}
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x88); emit32(0);
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x8C); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x88); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x8C); emit32(0);
     // Format = DXGI_FORMAT_R8G8B8A8_UNORM (28)
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x90); emit32(28);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x90); emit32(28);
     // ScanlineOrdering = 0, Scaling = 0
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x94); emit32(0);
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x98); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x94); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x98); emit32(0);
     // SampleDesc = {1, 0}
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x9C); emit32(1);
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xA0); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x9C); emit32(1);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xA0); emit32(0);
     // BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT (0x20)
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xA4); emit32(0x20);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xA4); emit32(0x20);
     // BufferCount = 1
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xA8); emit32(1);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xA8); emit32(1);
     // Padding 4 bytes
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xAC); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xAC); emit32(0);
     // OutputWindow = hwnd (from globals+8)
     emit8(0x48); emit8(0x8B); emit8(0x43); emit8(0x08); // rax = [rbx+8] = hwnd
-    emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8(0xB0);
+    emit8(0x48); emit8(0x89); emit8(0x84); emit8(0x24); emit32(0xB0);
     // Windowed = TRUE (1)
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xB8); emit32(1);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xB8); emit32(1);
     // SwapEffect = DXGI_SWAP_EFFECT_DISCARD (0)
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xBC); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xBC); emit32(0);
     // Flags = 0
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xC0); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xC0); emit32(0);
     // Padding
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xC4); emit32(0);
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xC4); emit32(0);
 
     // Set up call parameters
     // [rsp+0x20] = pFeatureLevels = NULL
@@ -66,19 +66,19 @@ void Codegen::emitDX11Init() {
     // [rsp+0x30] = SDKVersion = D3D11_SDK_VERSION (7)
     emit8(0x48); emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x30); emit32(7);
     // [rsp+0x38] = &SWAP_CHAIN_DESC
-    emit8(0x48); emit8(0x8D); emit8(0x44); emit8(0x24); emit8(0x80);
+    emit8(0x48); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0x80);
     emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x38);
     // [rsp+0x40] = &swapChain
-    emit8(0x48); emit8(0x8D); emit8(0x44); emit8(0x24); emit8(0xC0);
+    emit8(0x48); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0xC0);
     emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x40);
     // [rsp+0x48] = &device
-    emit8(0x48); emit8(0x8D); emit8(0x44); emit8(0x24); emit8(0xC8);
+    emit8(0x48); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0xC8);
     emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x48);
     // [rsp+0x50] = &featureLevel
-    emit8(0x48); emit8(0x8D); emit8(0x44); emit8(0x24); emit8(0xD8);
+    emit8(0x48); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0xD8);
     emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x50);
     // [rsp+0x58] = &context
-    emit8(0x48); emit8(0x8D); emit8(0x44); emit8(0x24); emit8(0xD0);
+    emit8(0x48); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0xD0);
     emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x58);
 
     // rcx = NULL (pAdapter)
@@ -96,13 +96,13 @@ void Codegen::emitDX11Init() {
 
     // Store device, context, swapChain in globals
     // [globals+56] = device
-    emit8(0x48); emit8(0x8B); emit8(0x44); emit8(0x24); emit8(0xC8); // rax = device
+    emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0xC8); // rax = device
     emit8(0x48); emit8(0x89); emit8(0x43); emit8(0x38);              // [rbx+56] = device
     // [globals+64] = context
-    emit8(0x48); emit8(0x8B); emit8(0x44); emit8(0x24); emit8(0xD0); // rax = context
+    emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0xD0); // rax = context
     emit8(0x48); emit8(0x89); emit8(0x43); emit8(0x40);              // [rbx+64] = context
     // [globals+72] = swapChain
-    emit8(0x48); emit8(0x8B); emit8(0x44); emit8(0x24); emit8(0xC0); // rax = swapChain
+    emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0xC0); // rax = swapChain
     emit8(0x48); emit8(0x89); emit8(0x43); emit8(0x48);              // [rbx+72] = swapChain
 
     // --- IDXGISwapChain::GetBuffer(swapChain, 0, &IID_ID3D11Texture2D, &backBuffer) ---
@@ -137,7 +137,7 @@ void Codegen::emitDX11Init() {
     heapFixups.push_back({code.size(), stringRVA + stringOffsets[iidIdx]});
     emit32(0);
     // r9 = &backBuffer at [rsp+0x80]
-    emit8(0x4C); emit8(0x8D); emit8(0x4C); emit8(0x24); emit8(0x80);
+    emit8(0x4C); emit8(0x8D); emit8(0x8C); emit8(0x24); emit32(0x80);
     emit8(0xFF); emit8(0xD0);                             // call rax
     // backBuffer is now at [rsp+0x80]
 
@@ -147,21 +147,21 @@ void Codegen::emitDX11Init() {
     emit8(0x48); emit8(0x8B); emit8(0x00);                // rax = vtable
     emit8(0x48); emit8(0x8B); emit8(0x40); emit8(0x48);  // rax = [rax+72] = CreateRenderTargetView fn
     emit8(0x48); emit8(0x8B); emit8(0x4B); emit8(0x38);  // rcx = device (this)
-    emit8(0x48); emit8(0x8B); emit8(0x54); emit8(0x24); emit8(0x80); // rdx = backBuffer
+    emit8(0x48); emit8(0x8B); emit8(0x94); emit8(0x24); emit32(0x80); // rdx = backBuffer
     emit8(0x45); emit8(0x33); emit8(0xC0);               // r8d = 0 (pDesc = NULL)
-    emit8(0x4C); emit8(0x8D); emit8(0x4C); emit8(0x24); emit8(0x88); // r9 = &rtv
+    emit8(0x4C); emit8(0x8D); emit8(0x8C); emit8(0x24); emit32(0x88); // r9 = &rtv
     emit8(0xFF); emit8(0xD0);                             // call rax
     // rtv is now at [rsp+0x88]
 
     // --- Release backBuffer ---
     // backBuffer->vtable[2](backBuffer) = Release
-    emit8(0x48); emit8(0x8B); emit8(0x44); emit8(0x24); emit8(0x80); // rax = backBuffer
+    emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0x80); // rax = backBuffer
     emit8(0x48); emit8(0x85); emit8(0xC0);                          // test rax, rax
     int skipReleaseBB = newLabel();
     emit8(0x74); emit8(0x0E);                                       // jz skipReleaseBB
     emit8(0x48); emit8(0x8B); emit8(0x00);                          // rax = vtable
     emit8(0x48); emit8(0x8B); emit8(0x40); emit8(0x10);            // rax = Release
-    emit8(0x48); emit8(0x8B); emit8(0x4C); emit8(0x24); emit8(0x80); // rcx = backBuffer
+    emit8(0x48); emit8(0x8B); emit8(0x8C); emit8(0x24); emit32(0x80); // rcx = backBuffer
     emit8(0xFF); emit8(0xD0);                                       // call rax
     emitLabel(skipReleaseBB);
 
@@ -171,25 +171,25 @@ void Codegen::emitDX11Init() {
     emit8(0x48); emit8(0x8B); emit8(0x80); emit32(0x108); // rax = [rax+264] = OMSetRenderTargets
     emit8(0x48); emit8(0x8B); emit8(0x4B); emit8(0x40);  // rcx = context (this)
     emit8(0xBA); emit32(1);                               // rdx = 1 (NumViews)
-    emit8(0x4C); emit8(0x8D); emit8(0x44); emit8(0x24); emit8(0x88); // r8 = &rtv
+    emit8(0x4C); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0x88); // r8 = &rtv
     emit8(0x45); emit8(0x33); emit8(0xC9);               // r9d = 0 (pDepthStencilView = NULL)
     emit8(0xFF); emit8(0xD0);                             // call rax
 
     // --- Create staging texture ---
     // D3D11_TEXTURE2D_DESC at [rsp+0x90] (48 bytes)
     emit8(0x8B); emit8(0x43); emit8(0x20);             // eax = width
-    emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x90); // Width
+    emit8(0x89); emit8(0x84); emit8(0x24); emit32(0x90); // Width
     emit8(0x8B); emit8(0x43); emit8(0x24);             // eax = height
-    emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x94); // Height
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x98); emit32(1);  // MipLevels = 1
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x9C); emit32(1);  // ArraySize = 1
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xA0); emit32(28); // Format = R8G8B8A8_UNORM
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xA4); emit32(1);  // SampleDesc.Count = 1
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xA8); emit32(0);  // SampleDesc.Quality = 0
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xAC); emit32(3);  // Usage = D3D11_USAGE_STAGING
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xB0); emit32(0);  // BindFlags = 0
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xB4); emit32(0x10000); // CPUAccessFlags = D3D11_CPU_ACCESS_WRITE
-    emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0xB8); emit32(0);  // MiscFlags = 0
+    emit8(0x89); emit8(0x84); emit8(0x24); emit32(0x94); // Height
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x98); emit32(1);  // MipLevels = 1
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x9C); emit32(1);  // ArraySize = 1
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xA0); emit32(28); // Format = R8G8B8A8_UNORM
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xA4); emit32(1);  // SampleDesc.Count = 1
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xA8); emit32(0);  // SampleDesc.Quality = 0
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xAC); emit32(3);  // Usage = D3D11_USAGE_STAGING
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xB0); emit32(0);  // BindFlags = 0
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xB4); emit32(0x10000); // CPUAccessFlags = D3D11_CPU_ACCESS_WRITE
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xB8); emit32(0);  // MiscFlags = 0
 
     // ID3D11Device::CreateTexture2D(device, &desc, NULL, &stagingTexture)
     // stagingTexture at [rsp+0xC0]
@@ -197,9 +197,9 @@ void Codegen::emitDX11Init() {
     emit8(0x48); emit8(0x8B); emit8(0x00);                // rax = vtable
     emit8(0x48); emit8(0x8B); emit8(0x40); emit8(0x28);  // rax = [rax+40] = CreateTexture2D
     emit8(0x48); emit8(0x8B); emit8(0x4B); emit8(0x38);  // rcx = device (this)
-    emit8(0x48); emit8(0x8D); emit8(0x54); emit8(0x24); emit8(0x90); // rdx = &desc
+    emit8(0x48); emit8(0x8D); emit8(0x94); emit8(0x24); emit32(0x90); // rdx = &desc
     emit8(0x45); emit8(0x33); emit8(0xC0);               // r8d = 0 (pInitialData)
-    emit8(0x4C); emit8(0x8D); emit8(0x8C); emit8(0x24); emit8(0xC0); emit32(0); // r9 = &stagingTexture
+    emit8(0x4C); emit8(0x8D); emit8(0x8C); emit8(0x24); emit32(0xC0); // r9 = &stagingTexture
     emit8(0xFF); emit8(0xD0);                             // call rax
     // stagingTexture at [rsp+0xC0]
 

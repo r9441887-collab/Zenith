@@ -18,9 +18,7 @@ bool Optimizer::isGlobal(const std::string& name, const Program& prog) {
 void Optimizer::collectFuncRefsInExpr(Expr* expr, std::unordered_set<std::string>& refs, const Program& prog) {
     if (!expr) return;
     if (auto call = dynamic_cast<CallExpr*>(expr)) {
-        if (isUserFunc(call->name, prog)) {
-            refs.insert(call->name);
-        }
+        refs.insert(call->name);
         collectFuncRefsInExpr(call->receiver.get(), refs, prog);
         for (auto& arg : call->args) {
             collectFuncRefsInExpr(arg.get(), refs, prog);

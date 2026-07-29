@@ -7,7 +7,9 @@
 
 extern func threadCreate(fn: int, arg: int) -> int
 extern func threadJoin(handle: int) -> int
+extern func threadDetach(handle: int) -> int
 extern func threadSleepMs(ms: int) -> void
+extern func threadYield() -> void
 extern func threadGetId() -> int
 extern func threadEqual(a: int, b: int) -> int
 ```
@@ -49,10 +51,10 @@ extern func threadCreate(fn: int, arg: int) -> int
 extern func threadJoin(handle: int) -> int
 extern func threadSleepMs(ms: int) -> void
 
-func worker(shared: int) -> int
-    while peek(shared + 40) == 0      # пока нет флага выхода
-        var val: int = peek(shared)    # прочитать данные
-        poke(shared + 8, val * 2)      # записать результат
+func worker(data: int) -> int
+    while peek(data + 40) == 0         # пока нет флага выхода
+        var val: int = peek(data)      # прочитать данные
+        poke(data + 8, val * 2)        # записать результат
         threadSleepMs(16)
     end
     return 0

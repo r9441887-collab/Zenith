@@ -3,12 +3,12 @@
 
 Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens), pos(0) {}
 
-Token Parser::peek() const { return tokens[pos]; }
+Token Parser::peek() const { if (tokens.empty() || pos >= tokens.size()) return {TokenKind::Eof, "", 0, 0.0, 0, 0}; return tokens[pos]; }
 Token Parser::peekNext() const {
     if (pos + 1 < tokens.size()) return tokens[pos + 1];
     return Token{TokenKind::Eof, "", 0, 0.0, 0, 0};
 }
-Token Parser::previous() const { return pos > 0 ? tokens[pos - 1] : tokens[0]; }
+Token Parser::previous() const { if (pos > 0) return tokens[pos - 1]; return {TokenKind::Error, "", 0, 0.0, 0, 0}; }
 Token Parser::advance() { Token t = tokens[pos]; if (!check(TokenKind::Eof)) pos++; return t; }
 bool Parser::check(TokenKind kind) const { return peek().kind == kind; }
 
@@ -228,6 +228,10 @@ std::unique_ptr<VarDecl> Parser::parseVarDecl() {
     if (check(TokenKind::LBrack)) {
         advance();
         vd->arraySize = (int)consume(TokenKind::Number, "Expected array size").intVal;
+        if (vd->arraySize <= 0) {
+            std::cerr << "Error at line " << previous().line << ": array size must be positive" << std::endl;
+            throw std::runtime_error("Invalid array size");
+        }
         consume(TokenKind::RBrack, "Expected ']'");
     }
 
@@ -677,6 +681,18 @@ Program Parser::parse() {
         throw std::runtime_error("Missing app directive");
     }
 
+    auto trySync = [&]() {
+        while (!check(TokenKind::Eof)) {
+            if (check(TokenKind::Newline)) { advance(); return true; }
+            if (check(TokenKind::End)) return true;
+            if (check(TokenKind::Else)) return true;
+            if (check(TokenKind::Func)) return true;
+            if (check(TokenKind::Struct)) return true;
+            advance();
+        }
+        return false;
+    };
+
     auto addBuiltinStruct = [&](const std::string& name, const std::vector<std::pair<std::string, TypeKind>>& fields) {
         auto sd = std::make_unique<StructDecl>();
         sd->name = name;
@@ -696,45 +712,49 @@ Program Parser::parse() {
     }
 
     while (!check(TokenKind::Eof)) {
-        if (check(TokenKind::Newline)) { advance(); continue; }
+        try {
+            if (check(TokenKind::Newline)) { advance(); continue; }
 
-        if (check(TokenKind::At)) {
-            advance();
-            consume(TokenKind::Import, "Expected 'import' after '@'");
-            consume(TokenKind::LParen, "Expected '('");
-            Token dll = consume(TokenKind::StringLit, "Expected DLL name string");
-            consume(TokenKind::RParen, "Expected ')'");
-            if (check(TokenKind::Newline)) advance();
-            ImportDecl imp;
-            std::string raw = dll.text;
-            size_t sep = raw.find("::");
-            if (sep != std::string::npos) {
-                imp.dllName = raw.substr(0, sep);
-                imp.module  = raw.substr(sep + 2);
-            } else {
-                imp.dllName = raw;
-            }
-            prog.imports.push_back(imp);
-            continue;
-        }
-
-        if (check(TokenKind::Extern)) {
-            prog.functions.push_back(parseExternFunc());
-        } else if (check(TokenKind::Struct)) {
-            prog.structs.push_back(parseStruct());
-        } else if (check(TokenKind::Func)) {
-            auto func = parseFunction();
-            for (auto& f : prog.functions) {
-                if (f->name == func->name) {
-                    throw std::runtime_error("Duplicate function '" + func->name + "'");
+            if (check(TokenKind::At)) {
+                advance();
+                consume(TokenKind::Import, "Expected 'import' after '@'");
+                consume(TokenKind::LParen, "Expected '('");
+                Token dll = consume(TokenKind::StringLit, "Expected DLL name string");
+                consume(TokenKind::RParen, "Expected ')'");
+                if (check(TokenKind::Newline)) advance();
+                ImportDecl imp;
+                std::string raw = dll.text;
+                size_t sep = raw.find("::");
+                if (sep != std::string::npos) {
+                    imp.dllName = raw.substr(0, sep);
+                    imp.module  = raw.substr(sep + 2);
+                } else {
+                    imp.dllName = raw;
                 }
+                prog.imports.push_back(imp);
+                continue;
             }
-            prog.functions.push_back(std::move(func));
-        } else if (check(TokenKind::Var) || check(TokenKind::Let)) {
-            prog.globals.push_back(parseVarDecl());
-        } else {
-            std::cerr << "Unexpected token '" << peek().text << "' at line " << peek().line << std::endl;
-            advance();
+
+            if (check(TokenKind::Extern)) {
+                prog.functions.push_back(parseExternFunc());
+            } else if (check(TokenKind::Struct)) {
+                prog.structs.push_back(parseStruct());
+            } else if (check(TokenKind::Func)) {
+                auto func = parseFunction();
+                for (auto& f : prog.functions) {
+                    if (f->name == func->name) {
+                        throw std::runtime_error("Duplicate function '" + func->name + "'");
+                    }
+                }
+                prog.functions.push_back(std::move(func));
+            } else if (check(TokenKind::Var) || check(TokenKind::Let)) {
+                prog.globals.push_back(parseVarDecl());
+            } else {
+                std::cerr << "Unexpected token '" << peek().text << "' at line " << peek().line << std::endl;
+                advance();
+            }
+        } catch (const std::runtime_error&) {
+            if (!trySync()) break;
         }
     }
     return prog;

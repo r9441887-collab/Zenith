@@ -95,7 +95,7 @@ static void writeFile(const std::string& path, const std::string& content) {
 }
 
 static void printUsage() {
-    std::cout << "Zenith Compiler v0.8.2" << std::endl;
+    std::cout << "Zenith Compiler v2.0" << std::endl;
     std::cout << "Usage:" << std::endl;
     std::cout << "  zenith <input.z> -o <output>       Compile a single file" << std::endl;
     std::cout << "  zenith <input.z> --lib -o out.dll  Compile as DLL (custom output)" << std::endl;
@@ -108,7 +108,7 @@ static void printUsage() {
 }
 
 static void printVersion() {
-    std::cout << "Zenith Compiler v0.8.2" << std::endl;
+    std::cout << "Zenith Compiler v2.0" << std::endl;
     std::cout << "Zero-dependency x86_64 Windows compiler" << std::endl;
 }
 
@@ -227,6 +227,8 @@ static int cmdBuild(bool libMode = false) {
             line = line.substr(0, end + 1);
         }
         // Check for "output dll" directive (after comment stripping)
+        size_t trail = line.find_last_not_of(" \t\r\n");
+        if (trail != std::string::npos) line = line.substr(0, trail + 1);
         if (line == "output dll") {
             libMode = true;
             continue;
@@ -450,7 +452,8 @@ static int cmdBuild(bool libMode = false) {
         if (hasNoMain(content)) combinedIsLib = true;
         std::string fileStr = file.string();
         if (!firstFile) {
-            // Strip lines starting with "app console" or "app gui"
+            combinedSource += "\n";
+            lineSourceFile.push_back(fileStr);
             std::istringstream iss(content);
             std::string line;
             std::string filtered;
@@ -459,16 +462,14 @@ static int cmdBuild(bool libMode = false) {
                 std::string trimmed = line;
                 size_t s = trimmed.find_first_not_of(" \t");
                 if (s != std::string::npos) trimmed = trimmed.substr(s);
-                if (trimmed == "app console" || trimmed == "app gui" ||
-                    trimmed.substr(0, 7) == "app gui") continue;
+                if (trimmed.find("app ") == 0 || trimmed.find("@import") == 0) continue;
                 if (trimmed == "# [no_main]") continue;
                 if (!firstLine) filtered += "\n";
                 filtered += line;
                 lineSourceFile.push_back(fileStr);
                 firstLine = false;
             }
-            combinedSource += "\n" + filtered;
-            lineSourceFile.push_back(fileStr); // for the \n
+            combinedSource += filtered;
         } else {
             combinedSource += content;
             int lines = 0;
