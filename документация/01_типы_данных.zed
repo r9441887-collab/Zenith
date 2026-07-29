@@ -9,141 +9,52 @@
 | `bool` | 4 байта | `rax` | true=1, false=0 |
 | `string` | 8 байт | `rax` | Указатель на строку в .rdata |
 | `void` | — | — | Нет значения |
-| `entity` | 8 байт | `rax` | Зарезервировано для ECS |
 
-## Типы указателей (Pointer Types)
+## Типы указателей
 
-Zenith поддерживает типизированные указатели:
-
-| Тип | Размер | Описание | Доступность |
-|-----|--------|----------|-------------|
-| `ptr<int>` | 8 байт | Виртуальный указатель на int | Всегда |
-| `virt ptr<float>` | 8 байт | Явно виртуальный указатель (синоним) | Всегда |
-| `phys ptr<int>` | 8 байт | Указатель на физический адрес | **Только EFI** |
-
-### Адресное пространство
-
-| Квалификатор | Описание |
-|--------------|----------|
-| `virt` (по умолчанию) | Виртуальная память процесса |
-| `phys` | Физическая память (MMIO, видеокарта, RAM напрямую) |
-
-`phys` разрешён **только** в `app efi`. При попытке использования в console/gui — ошибка компиляции.
-
-```zenith
-app efi
-
-func main() -> int
-    var framebuffer: phys ptr<int> = ...  # физический адрес видеопамяти
-    var p: ptr<int>                      # обычный виртуальный указатель
-    return 0
-end
-```
+| Тип | Доступность |
+|-----|------------|
+| `ptr<int>` | Всегда — виртуальный указатель |
+| `virt ptr<float>` | Всегда — синоним |
+| `phys ptr<int>` | Только vide hard + EFI/bare |
 
 ## Операции с указателями
 
-| Оператор | Пример | Код | Описание |
-|----------|--------|-----|----------|
-| `&` | `var p: ptr<int> = &x` | `lea rax, [rbp+offset]` | Взять адрес переменной |
-| `*` | `var v: int = *p` | `mov rax, [rax]` | Прочитать по указателю |
-| `* =` | `*p = 42` | `mov [r8], r9` | Записать по указателю |
+| Оператор | Пример | Машинный код |
+|----------|--------|-------------|
+| `&x` | `var p = &x` | `lea rax, [rbp+off]` |
+| `*p` | `var v = *p` | `mov rax, [rax]` |
+| `*p = v` | `*p = 42` | `mov [r8], r9` |
 
 ```zenith
 var value: int = 100
-var p: ptr<int> = &value     # p указывает на value
-print(*p)                     # 100
-*p = 200                      # запись через указатель
-print(value)                  # 200 — переменная изменилась!
+var p: ptr<int> = &value
+print(*p)          # 100
+*p = 200
+print(value)       # 200
 ```
 
 ## Встроенные структуры (app gui)
 
-| Тип | Размер | Поля | Описание |
-|-----|--------|------|----------|
-| `vec2` | 8 байт | `x: float`, `y: float` | 2D-вектор |
-| `vec3` | 16 байт | `x: float`, `y: float`, `z: float` | 3D-вектор (+padding) |
-| `color` | 16 байт | `r: float`, `g: float`, `b: float`, `a: float` | RGBA цвет |
+| Тип | Размер | Поля |
+|-----|--------|------|
+| `vec2` | 8 байт | `x: float`, `y: float` |
+| `vec3` | 16 байт | `x: float`, `y: float`, `z: float` |
+| `color` | 16 байт | `r: float`, `g: float`, `b: float`, `a: float` |
 
-Автоматически добавляются при `app gui`.
-
-## Примеры использования
-
-```zenith
-var x: int = 42
-var pi: float = 3.14
-var flag: bool = true
-var name: string = "Player"
-```
-
-### Числовые литералы
+## Литералы
 
 ```zenith
 var a: int = 100          # десятичное
 var b: int = 0xFF         # hex (255)
-var c: int = 0xFFFF0000   # hex цвет (ARGB)
-var f: float = 3.14       # float литерал
-var g: float = 1.0f       # float с суффиксом f
-```
-
-### Bool
-
-```zenith
-var alive: bool = true
-var dead: bool = false
-
-# true = 1, false = 0
-# bool хранится как обычный int (0 или 1)
-```
-
-### Строки
-
-```zenith
+var f: float = 3.14
+var g: float = 1.0f
+var flag: bool = true
 var msg: string = "Hello"
-
-# Экранирование:
-var nl: string = "строка1\nстрока2"      # \n = перевод строки
-var tab: string = "col1\tcol2"           # \t = табуляция
-var bs: string = "path\\file"            # \\ = обратный слэш
-var q: string = "said \"hello\""         # \" = кавычка
-var z: string = "data\0end"             # \0 = нулевой байт
 ```
 
-### vec2, vec3, color (app gui)
+## Именованные цвета (app gui)
 
-```zenith
-app gui
+`Red`, `Green`, `Blue`, `White`, `Black`, `Yellow`, `Cyan`, `Magenta`, `Gray`
 
-func main()
-    var pos: vec2
-    pos.x = 100.0
-    pos.y = 200.0
-
-    var dir: vec3
-    dir.x = 1.0
-    dir.y = 0.0
-    dir.z = -1.0
-
-    var col: color
-    col.r = 1.0    # красный
-    col.g = 0.0    # зелёный
-    col.b = 0.0    # синий
-    col.a = 1.0    # альфа (непрозрачный)
-    return 0
-end
-```
-
-### Именованные цвета (app gui)
-
-| Имя | ARGB |
-|-----|------|
-| `Red` | `0xFFFF0000` |
-| `Green` | `0xFF00FF00` |
-| `Blue` | `0xFF0000FF` |
-| `White` | `0xFFFFFFFF` |
-| `Black` | `0xFF000000` |
-| `Yellow` | `0xFFFFFF00` |
-| `Cyan` | `0xFF00FFFF` |
-| `Magenta` | `0xFFFF00FF` |
-| `Gray` | `0xFF808080` |
-
-Формат цвета: `0xAARRGGBB` (Alpha, Red, Green, Blue).
+Формат: `0xAARRGGBB`
