@@ -1,0 +1,147 @@
+# Структуры
+
+## Объявление
+
+```zenith
+struct Point
+    var x: float
+    var y: float
+end
+```
+
+Или с фигурными скобками:
+
+```zenith
+struct Player {
+    var name: string
+    var hp: int = 100
+    var pos: Point
+}
+```
+
+## Использование
+
+```zenith
+var p: Point            # объявить переменную типа Point
+p.x = 3.14             # запись поля
+p.y = 2.71
+var val: float = p.x    # чтение поля
+```
+
+## Layout в памяти
+
+Поля выравниваются по размеру типа:
+
+```zenith
+struct Player
+    var name: string    # offset=0,  size=8
+    var hp: int         # offset=8,  size=8
+    var pos: Point      # offset=16, size=8 (2 × float)
+end
+# totalSize = 24 байта
+```
+
+### Правила выравнивания
+
+| Поле типа | Размер | Выравнивание |
+|-----------|--------|-------------|
+| `int` | 8 байт | до 8 |
+| `float` | 4 байта | до 4 |
+| `bool` | 4 байта | до 4 |
+| `string` | 8 байт | до 8 |
+| `vec2` | 8 байт | до 8 |
+| `vec3` | 16 байт | до 16 |
+| `color` | 16 байт | до 16 |
+| struct (вложенная) | свой размер | до своего размера |
+
+### Пример выравнивания
+
+```zenith
+struct Bad
+    var a: float        # offset=0,  size=4
+    var b: int          # offset=8,  size=8 (выровнен до 8!)
+    var c: float        # offset=16, size=4
+end
+# totalSize = 20 байт (не 16! из-за padding между a и b)
+```
+
+## Доступ к полям
+
+```zenith
+var p: Point
+p.x = 1.0              # запись через .
+var v: float = p.x      # чтение через .
+```
+
+**Вложенные поля** (через промежуточную переменную):
+
+```zenith
+struct Game
+    var player: Point
+end
+
+var g: Game
+g.player.x = 5.0       # OK
+g.player.y = 10.0      # OK
+```
+
+## Встроенные структуры (app gui)
+
+При `app gui` компилятор автоматически добавляет:
+
+```zenith
+struct vec2
+    var x: float
+    var y: float
+end
+
+struct vec3
+    var x: float
+    var y: float
+    var z: float
+end
+
+struct color
+    var r: float
+    var g: float
+    var b: float
+    var a: float
+end
+```
+
+Их не нужно объявлять — они доступны автоматически.
+
+## Практический пример: игра
+
+```zenith
+struct Entity
+    var x: float
+    var y: float
+    var hp: int = 100
+    var alive: bool = true
+end
+
+func damage(e: Entity, amount: int) -> int
+    e.hp = e.hp - amount
+    if e.hp <= 0
+        e.hp = 0
+        e.alive = false
+    end
+    return e.hp
+end
+
+func main() -> int
+    var player: Entity
+    player.x = 100.0
+    player.y = 200.0
+
+    damage(player, 50)
+    print(player.hp)       # 50
+
+    damage(player, 60)
+    print(player.hp)       # 0
+    print(player.alive)    # 0 (false)
+
+    return 0
+end
+```

@@ -1,0 +1,72 @@
+# UEFI / EFI режим
+
+Zenith компилирует UEFI-приложения (PE32+ EFI).
+Используйте `app efi`.
+
+## Включение
+
+```zenith
+app efi
+
+func main() -> int
+    efi_print("Hello from UEFI!")
+    return 0
+end
+```
+
+## Сборка
+
+```bash
+zenith boot.z               # -> BOOTX64.EFI
+zenith boot.z -o myos.efi   # -> myos.efi
+zenith build                 # -> exe/<имя>.efi
+```
+
+## EFI System Table
+
+ImageHandle и SystemTable автоматически сохраняются при старте.
+
+### Функции
+
+| Функция | Описание |
+|---------|----------|
+| `efi_image_handle()` | EFI_HANDLE |
+| `efi_system_table()` | EFI_SYSTEM_TABLE* |
+| `efi_print("text")` | Печать через ConOut |
+| `efi_exit(status)` | BS->Exit |
+
+```zenith
+app efi
+efi_print("Hello UEFI!")
+efi_exit(0)
+```
+
+## Доступ к таблицам через peek (st = efi_system_table())
+
+| Поле | Смещение |
+|------|----------|
+| FirmwareVendor | st + 24 |
+| ConOut | st + 64 |
+| BootServices | st + 96 |
+| RuntimeServices | st + 88 |
+| ConfigTable | st + 112 |
+
+## Физическая память (vide hard)
+
+```zenith
+app efi
+vide hard
+var fb: phys ptr<int> = 0xB8000
+*fb = 0x1F48
+```
+
+## Прерывания и порты (vide hard)
+
+`cli()` `sti()` `hlt()` `int(n)`
+`inb/outb/inw/outw/ind/outd(port, val)`
+
+## Ограничения
+
+- Нет print(), sleep(), pause() (только Windows)
+- Нет GUI и аллокаторов
+- easy-режим: только `efi_print`, `efi_exit`

@@ -1,0 +1,201 @@
+# Встроенный мини-ассемблер x86-64
+
+Zenith включает мини-ассемблер x86-64 для прямых вставок машинного кода.
+**Доступен только в EFI-режиме** (`app efi`).
+
+## Синтаксис
+
+```zenith
+app efi
+
+func main() -> int
+    asm {
+        mov rax, 42
+        push rax
+        pop rbx
+        xor rcx, rcx
+        ret
+    }
+    return 0
+end
+```
+
+- Каждая строка: `мнемоника операнд1, операнд2`
+- Операнды разделяются запятой
+- Регистр-операнды: `rax`, `rcx`, `rdx`, `rbx`, `rsp`, `rbp`, `rsi`, `rdi`, `r8`–`r15`
+- Память: `[reg]`, `[reg + N]`, `[reg - N]`
+- Константы: десятичные (`42`), hex (`0xB8000`)
+
+## Поддерживаемые инструкции
+
+### Пересылка данных
+
+| Инструкция | Примеры |
+|-----------|--------|
+| `mov` | `mov rax, rcx` · `mov rax, 42` · `mov rax, 0xB8000` · `mov [rax], rbx` · `mov rcx, [rdx]` · `mov [rax + 8], rcx` |
+
+### Арифметика
+
+| Инструкция | Примеры |
+|-----------|--------|
+| `add` | `add rax, rbx` · `add rcx, 8` |
+| `sub` | `sub rax, rcx` · `sub rsp, 32` |
+
+### Логические
+
+| Инструкция | Примеры |
+|-----------|--------|
+| `xor` | `xor rax, rax` · `xor rcx, 1` |
+| `and` | `and rax, 0xFF` · `and rcx, rdx` |
+| `or` | `or rax, rbx` · `or rcx, 0x100` |
+| `not` | `not rax` |
+| `test` | `test rax, rax` · `test rcx, 0xFF` |
+| `neg` | `neg rax` |
+
+### Сдвиги
+
+| Инструкция | Примеры |
+|-----------|--------|
+| `shl` | `shl rax, 4` · `shl rax, cl` |
+| `shr` | `shr rcx, 8` · `shr rdx, cl` |
+
+### Унарные
+
+| Инструкция | Примеры |
+|-----------|--------|
+| `inc` | `inc rax` |
+| `dec` | `dec rcx` |
+
+### Стек
+
+| Инструкция | Примеры |
+|-----------|--------|
+| `push` | `push rax` · `push rbx` |
+| `pop` | `pop rcx` · `pop rdx` |
+
+### Переходы
+
+| Инструкция | Пример (адрес — цель в байтах) |
+|-----------|-------------------------------|
+| `jmp` | `jmp 0x1000` |
+| `je` / `jz` | `je 0x2000` |
+| `jne` / `jnz` | `jne 0x3000` |
+| `jl` | `jl 0x4000` |
+| `jle` | `jle 0x5000` |
+| `jg` | `jg 0x6000` |
+| `jge` | `jge 0x7000` |
+| `jb` | `jb 0x8000` |
+| `jbe` | `jbe 0x9000` |
+| `ja` | `ja 0xA000` |
+| `jae` | `jae 0xB000` |
+| `js` | `js 0xC000` |
+| `jns` | `jns 0xD000` |
+
+### Системные инструкции
+
+| Инструкция | Пример | Описание |
+|-----------|--------|---------|
+| `cli` | `cli` | Clear Interrupt Flag |
+| `sti` | `sti` | Set Interrupt Flag |
+| `hlt` | `hlt` | Halt CPU |
+| `int` | `int 0x10` | Программное прерывание |
+| `iret` / `iretq` | `iretq` | Возврат из прерывания (64-bit) |
+| `syscall` | `syscall` | Системный вызов |
+| `wrmsr` | `wrmsr` | Запись MSR |
+| `rdmsr` | `rdmsr` | Чтение MSR |
+| `cpuid` | `cpuid` | CPU Identification |
+| `in` | `in rax, 0x60` | Чтение из порта |
+| `out` | `out 0x60, rax` | Запись в порт |
+
+### CR-регистры (управление процессором)
+
+| Инструкция | Описание |
+|-----------|---------|
+| `mov cr0, rax` | Записать в CR0 (защита, пейджинг) |
+| `mov cr2, rax` | Записать в CR2 (адрес page fault) |
+| `mov cr3, rax` | Записать в CR3 (база таблиц страниц) |
+| `mov cr4, rax` | Записать в CR4 (расширения) |
+| `mov rax, cr0` | Прочитать CR0 |
+| `mov rcx, cr3` | Прочитать CR3 |
+
+### Таблицы дескрипторов
+
+| Инструкция | Описание |
+|-----------|---------|
+| `lgdt [rax]` | Загрузить GDT (Global Descriptor Table) |
+| `lidt [rax]` | Загрузить IDT (Interrupt Descriptor Table) |
+
+### Прочее
+
+| Инструкция | Описание |
+|-----------|---------|
+| `nop` | No Operation |
+| `ret` | Возврат из функции |
+| `cqo` / `cqd` | Sign-extend RAX → RDX:RAX |
+| `leave` | Восстановить кадр стека |
+
+## Регистры
+
+| 64-bit | 32-bit | 16-bit | 8-bit | Номер |
+|--------|--------|--------|-------|-------|
+| `rax` | `eax` | `ax` | `al` | 0 |
+| `rcx` | `ecx` | `cx` | `cl` | 1 |
+| `rdx` | `edx` | `dx` | `dl` | 2 |
+| `rbx` | `ebx` | `bx` | `bl` | 3 |
+| `rsp` | `esp` | `sp` | `spl` | 4 |
+| `rbp` | `ebp` | `bp` | `bpl` | 5 |
+| `rsi` | `esi` | `si` | `sil` | 6 |
+| `rdi` | `edi` | `di` | `dil` | 7 |
+| `r8` | `r8d` | `r8w` | `r8b` | 8 |
+| `r9` | `r9d` | `r9w` | `r9b` | 9 |
+| `r10` | `r10d` | `r10w` | `r10b` | 10 |
+| `r11` | `r11d` | `r11w` | `r11b` | 11 |
+| `r12` | `r12d` | `r12w` | `r12b` | 12 |
+| `r13` | `r13d` | `r13w` | `r13b` | 13 |
+| `r14` | `r14d` | `r14w` | `r14b` | 14 |
+| `r15` | `r15d` | `r15w` | `r15b` | 15 |
+
+## Примеры
+
+### Переход в 64-bit Long Mode (фрагмент)
+
+```zenith
+app efi
+
+func main() -> int
+    cli()
+
+    asm {
+        lgdt [rax]           # загрузить GDT
+        mov rax, cr4
+        or rax, 0x20         # PAE bit
+        mov cr4, rax
+        mov rax, cr0
+        or rax, 0x80000000   # PG bit
+        mov cr0, rax
+    }
+    return 0
+end
+```
+
+### Чтение CPUID
+
+```zenith
+app efi
+
+func main() -> int
+    asm {
+        mov rax, 1
+        cpuid
+        # rbx, rcx, rdx = информация о CPU
+    }
+    return 0
+end
+```
+
+## Ограничения
+
+- Только x86-64 инструкции (64-bit режим)
+- Нет меток и символов — только абсолютные адреса для переходов
+- Нет поддержки XMM/SSE в asm-блоке (используйте обычный код Zenith)
+- Неподдерживаемая инструкция: warning и пропуск

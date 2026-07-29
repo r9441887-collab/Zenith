@@ -1,0 +1,112 @@
+# Язык Зенит — Краткий обзор
+
+**Zenith** — компилируемый язык программирования для игр, системного ПО,
+UEFI-загрузчиков и bare-metal операционных систем.
+Компилируется напрямую в x86_64 машинный код без внешних зависимостей.
+
+## Быстрый старт
+
+```zenith
+app console
+
+func main() -> int
+    print("Привет, мир!")
+    return 0
+end
+```
+
+## Типы приложений
+
+Каждый файл .z обязан начинаться с `app`:
+
+| Директива | Выход | Описание |
+|-----------|-------|----------|
+| `app console` | .exe | Консольное приложение Windows |
+| `app gui` | .exe | GUI (окна, рисование, ввод) |
+| `app efi` | .efi / BOOTX64.EFI | UEFI-загрузчик |
+| `app bare` | .bin (raw binary) | Bare-metal ОС без ОС |
+
+## Режимы сложности: `vide easy` / `vide hard`
+
+После `app` можно указать режим:
+
+| Режим | Что доступно |
+|-------|-------------|
+| `vide easy` | Только простые функции, без asm/phys |
+| `vide hard` (по умолчанию) | Полный контроль: asm, phys-указатели, прерывания |
+
+```zenith
+app bare
+vide easy            # простой синтаксис
+
+func main()
+    vga_clear()
+    vga_print("Hello!")
+    halt()
+end
+```
+
+```zenith
+app bare
+vide hard            # полный контроль
+
+func main()
+    asm { cli }
+    var fb: phys ptr<int> = 0xB8000
+    *fb = 0x1F48
+    halt()
+end
+```
+
+## Структура файла
+
+```zenith
+app console              # 1. Тип приложения
+vide easy                # 2. (опционально) режим сложности
+
+@import("some.dll")      # 3. Импорт DLL
+
+extern func f(a: int) -> int  # 4. Внешние функции
+
+struct Point              # 5. Структуры
+    var x: float
+    var y: float
+end
+
+var globalVar: int = 0    # 6. Глобальные переменные
+
+func main() -> int        # 7. Точка входа
+    return 0
+end
+```
+
+## Компиляция
+
+```bash
+# Консоль / GUI
+zenith main.z -o game.exe
+
+# EFI (автоматически → BOOTX64.EFI)
+zenith boot.z
+
+# Bare-metal (автоматически → a.bin)
+zenith kernel.z
+
+# Проектная сборка
+zenith build
+```
+
+## Ключевые особенности
+
+- Ноль внешних зависимостей
+- Прямая генерация x86_64 машинного кода
+- 4 типа выхода: .exe, .dll, .efi, .bin (raw)
+- Указатели: `ptr<T>`, `phys ptr<T>`, `&x`, `*p`, `*p = v`
+- Встроенные аллокаторы: bump, arena, pool, slot
+- Встроенный мини-ассемблер x86-64 (vide hard)
+- Прерывания и порты ввода-вывода
+- EFI System Table (efi_print, efi_exit)
+- Bare-metal VGA: vga_print, vga_clear, vga_putc
+- 2D графика: software (GDI) и DX11
+- Многопоточность через libs.dll
+- Мёртвый код удаляется оптимизатором

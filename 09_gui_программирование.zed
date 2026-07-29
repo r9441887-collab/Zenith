@@ -1,0 +1,304 @@
+# GUI-программирование
+
+## Выбор рендера
+
+Zenith поддерживает два графических бэкенда:
+
+| Директива | Бэкенд | Описание |
+|-----------|--------|----------|
+| `app gui` | Software Rendering (GDI) | По умолчанию. Быстрый старт, совместимость |
+| `app gui sr` | Software Rendering (GDI) | Явный выбор GDI |
+| `app gui dx` | DirectX 11 | GPU-акселерация через staging texture |
+
+```zenith
+app gui dx     # DirectX 11 рендеринг
+
+func main()
+    createWindow(640, 480, "Моё окно")
+    while getKey(27) == 0 end
+    closeWindow()
+end
+```
+
+**Обратная совместимость:** `app gui` работает так же, как `app gui sr`.
+
+## Минимальное окно
+
+```zenith
+app gui
+
+func main()
+    createWindow(640, 480, "Моё окно")
+    while getKey(27) == 0 end    # ждём Esc
+    closeWindow()
+end
+```
+
+## Жизненный цикл окна
+
+```
+createWindow(w, h, title)   → создаёт HWND + framebuffer
+    ↓
+[рендер-цикл]
+    ↓
+closeWindow()               → разрушает окно, освобождает ресурсы
+```
+
+### createWindow(w, h, title)
+
+Создаёт окно и framebuffer.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `w` | int | Ширина в пикселях |
+| `h` | int | Высота в пикселях |
+| `title` | string | Заголовок окна |
+
+**SR (GDI):** RegisterClassExA → CreateWindowExA → CreateDIBSection (32bpp BGRA).
+**DX11:** RegisterClassExA → CreateWindowExA → D3D11CreateDeviceAndSwapChain → RenderTargetView → Staging Texture.
+
+**Многократный вызов:** второй вызов `createWindow` пропускает инициализацию.
+
+### closeWindow()
+
+Разрушает окно и освобождает все связанные ресурсы.
+
+**SR (GDI):** DestroyWindow.
+**DX11:** Release всех COM-объектов (staging texture, RTV, context, swapChain, device) → DestroyWindow.
+
+## Отрисовка
+
+### clear(color)
+
+Заливает весь framebuffer одним цветом.
+
+```zenith
+clear(0xFF101018)      # тёмно-синий
+clear(Red)             # красный (имя цвета)
+clear(0xFF000000)      # чёрный
+```
+
+Формат цвета: `0xAARRGGBB`.
+
+Внутри: `rep stosd` — массовая заливка памяти.
+
+**DX11:** очищает software framebuffer (staging texture уже отмаплена).
+
+### drawPixel(x, y, color)
+
+Рисует один пиксель.
+
+```zenith
+drawPixel(100, 200, 0xFFFFFFFF)   # белый пиксель
+drawPixel(50, 50, Green)           # зелёный пиксель
+```
+
+Формула адреса: `framebuffer + (y * width + x) * 4`.
+
+**DX11:** пишет в software framebuffer (staging texture), пиксели автоматически попадают на GPU через CopyResource при present().
+
+### present()
+
+Показывает framebuffer на экране.
+
+```zenith
+present()
+```
+
+Внутри:
+- **SR:** BitBlt (backbuffer → screen) + PeekMessageA + Sleep(1)
+- **DX11:** Unmap staging → GetBuffer → CopyResource (staging → backbuffer) → Present(1,0) → Map staging + PeekMessageA + Sleep(1)
+
+**Важно:** без `present()` ничего не отображается!
+
+## Технические подробности
+
+### Модель рендеринга
+
+Zenith GUI использует **гибридный подход**: программный framebuffer (для отрисовки) с выводом на экран.
+
+| Режим | drawPixel/clear | present |
+|-------|----------------|---------|
+| SR | WriteFile в DIBSection | BitBlt → HDC |
+| DX11 | WriteFile в staging texture (Map) | Unmap → CopyResource → SwapChain::Present |
+
+Один и тот же API (`drawPixel`, `clear`, `present`) работает в обоих режимах. Выбор рендера влияет только на производительность и способ вывода на экран.
+
+### DX11 архитектура
+
+```
+createWindow → D3D11CreateDeviceAndSwapChain
+            → CreateRenderTargetView (для backbuffer)
+            → CreateTexture2D (STAGING, CPU_WRITE)
+            → Map (получаем указатель на пиксели)
+
+clear/drawPixel → пишем в staging texture
+
+present → Unmap → GetBuffer(backbuffer) → CopyResource(staging→backbuffer)
+               → Present(1, 0) → Map (перемаппиваем для следующего кадра)
+
+closeWindow → Release: staging, RTV, context, swapChain, device → DestroyWindow
+```
+
+### Программный буфер
+
+Пиксели хранятся в формате `0xAARRGGBB` (32 бита на пиксель), little-endian BGRA.
+
+```zenith
+# Пиксель по координатам (x, y):
+# framebuffer[(y * width + x) * 4 + 0] = Blue
+# framebuffer[(y * width + x) * 4 + 1] = Green
+# framebuffer[(y * width + x) * 4 + 2] = Red
+# framebuffer[(y * width + x) * 4 + 3] = Alpha
+```
+
+## Типы рендер-циклов
+
+### Цикл с getKey (ожидание клавиши)
+
+```zenith
+while getKey(27) == 0
+    clear(0xFF000000)
+    # ... рисование ...
+    present()
+end
+```
+
+Esc (VK=27) для выхода.
+
+### Цикл с processMessages (неблокирующий)
+
+```zenith
+while processMessages() != 0
+    clear(0xFF000000)
+    # ... рисование ...
+    present()
+end
+```
+
+`processMessages()` возвращает 0 при `WM_QUIT`.
+
+## Ввод
+
+### getKey(vk)
+
+Возвращает 1 если клавиша зажата, 0 если нет.
+
+| VK-код | Клавиша |
+|--------|---------|
+| 27 | Escape |
+| 13 | Enter |
+| 32 | Space |
+| 37 | Left Arrow |
+| 38 | Up Arrow |
+| 39 | Right Arrow |
+| 40 | Down Arrow |
+| 65-90 | A-Z |
+| 112-123 | F1-F12 |
+
+```zenith
+# Движение персонажа
+var px: int = 100
+var py: int = 100
+
+while getKey(27) == 0
+    if getKey(0x57)       # W
+        py = py - 3
+    end
+    if getKey(0x53)       # S
+        py = py + 3
+    end
+    if getKey(0x41)       # A
+        px = px - 3
+    end
+    if getKey(0x44)       # D
+        px = px + 3
+    end
+    present()
+end
+```
+
+## Рисование прямоугольников
+
+В Zenith нет встроенного `drawRect`. Используйте функцию `fill`:
+
+```zenith
+func fill(x: int, y: int, w: int, h: int, col: int)
+    var cx: int = x
+    while cx < x + w
+        var cy: int = y
+        while cy < y + h
+            drawPixel(cx, cy, col)
+            cy = cy + 1
+        end
+        cx = cx + 1
+    end
+end
+```
+
+### Использование
+
+```zenith
+fill(100, 100, 50, 50, Red)         # красный квадрат 50×50
+fill(200, 150, 100, 30, 0xFF00FF00) # зелёный прямоугольник
+```
+
+## Полный пример: интерактивная кнопка
+
+```zenith
+app gui
+
+func fill(x: int, y: int, w: int, h: int, col: int)
+    var cx: int = x
+    while cx < x + w
+        var cy: int = y
+        while cy < y + h
+            drawPixel(cx, cy, col)
+            cy = cy + 1
+        end
+        cx = cx + 1
+    end
+end
+
+func main()
+    createWindow(320, 240, "Button Demo")
+    var pressed: int = 0
+
+    while getKey(27) == 0
+        clear(0xFF606060)
+
+        # Кнопка
+        var bx: int = 80
+        var by: int = 90
+        var bw: int = 160
+        var bh: int = 60
+
+        if getKey(32)          # Space
+            pressed = 1
+        else
+            if pressed == 1
+                pressed = 2     # был нажат, отпущен
+            end
+        end
+
+        # Цвет кнопки
+        var col: int = 0xFF3366CC
+        if pressed == 1
+            col = 0xFF22AA44
+        end
+
+        fill(bx, by, bw, bh, col)
+        present()
+    end
+    closeWindow()
+end
+```
+
+## Пример: игра с врагами
+
+См. `examples/game.z` — полноценная игра с:
+- Движением игрока (WASD + стрелки)
+- Двумя AI-врагами (преследователь + блуждающий)
+- Многопоточностью
+- Столкновениями
+- Счётом

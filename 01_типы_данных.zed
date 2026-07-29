@@ -1,0 +1,60 @@
+# Типы данных
+
+## Примитивные типы
+
+| Тип | Размер | Регистр | Описание |
+|-----|--------|---------|----------|
+| `int` | 8 байт | `rax` | 64-bit signed integer |
+| `float` | 4 байта | `xmm0` | IEEE 754 single (SSE) |
+| `bool` | 4 байта | `rax` | true=1, false=0 |
+| `string` | 8 байт | `rax` | Указатель на строку в .rdata |
+| `void` | — | — | Нет значения |
+
+## Типы указателей
+
+| Тип | Доступность |
+|-----|------------|
+| `ptr<int>` | Всегда — виртуальный указатель |
+| `virt ptr<float>` | Всегда — синоним |
+| `phys ptr<int>` | Только vide hard + EFI/bare |
+
+## Операции с указателями
+
+| Оператор | Пример | Машинный код |
+|----------|--------|-------------|
+| `&x` | `var p = &x` | `lea rax, [rbp+off]` |
+| `*p` | `var v = *p` | `mov rax, [rax]` |
+| `*p = v` | `*p = 42` | `mov [r8], r9` |
+
+```zenith
+var value: int = 100
+var p: ptr<int> = &value
+print(*p)          # 100
+*p = 200
+print(value)       # 200
+```
+
+## Встроенные структуры (app gui)
+
+| Тип | Размер | Поля |
+|-----|--------|------|
+| `vec2` | 8 байт | `x: float`, `y: float` |
+| `vec3` | 16 байт | `x: float`, `y: float`, `z: float` |
+| `color` | 16 байт | `r: float`, `g: float`, `b: float`, `a: float` |
+
+## Литералы
+
+```zenith
+var a: int = 100          # десятичное
+var b: int = 0xFF         # hex (255)
+var f: float = 3.14
+var g: float = 1.0f
+var flag: bool = true
+var msg: string = "Hello"
+```
+
+## Именованные цвета (app gui)
+
+`Red`, `Green`, `Blue`, `White`, `Black`, `Yellow`, `Cyan`, `Magenta`, `Gray`
+
+Формат: `0xAARRGGBB`

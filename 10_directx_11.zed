@@ -1,0 +1,224 @@
+# DirectX 11
+
+DirectX 11 включается директивой `type dx` после `app gui`.
+
+## Быстрый старт
+
+```zenith
+app gui
+type dx
+
+func main()
+    dxInit(800, 600, "DirectX 11 Demo")
+
+    while getKey(27) == 0
+        dxClear(0.1, 0.1, 0.2, 1.0)
+        dxPresent()
+    end
+
+    dxClose()
+end
+```
+
+## Инициализация
+
+### dxInit(w, h, title)
+
+Создаёт окно + DirectX 11 устройство + swap chain.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `w` | int | Ширина окна |
+| `h` | int | Высота окна |
+| `title` | string | Заголовок окна |
+
+**Что создаётся внутри:**
+1. HWND (RegisterClassExA + CreateWindowExA)
+2. `IDXGIFactory` (CreateDXGIFactory)
+3. `IDXGIAdapter` (EnumAdapters)
+4. `ID3D11Device` + `ID3D11DeviceContext` (D3D11CreateDevice)
+5. `IDXGISwapChain` (CreateSwapChain)
+6. `ID3D11RenderTargetView` (CreateRenderTargetView)
+
+**Параметры по умолчанию:**
+- Driver type: `D3D_DRIVER_TYPE_HARDWARE` (GPU)
+- Feature level: `D3D_FEATURE_LEVEL_11_0`
+- Buffer count: 2 (double buffering)
+- VSync: включён
+- Формат: `DXGI_FORMAT_R8G8B8A8_UNORM`
+
+### dxClose()
+
+Освобождает все COM-объекты:
+- renderTargetView
+- swapChain
+- deviceContext
+- device
+
+Обязательно вызывать при завершении.
+
+## Отрисовка
+
+### dxClear(r, g, b, a)
+
+Очищает render target заданным цветом.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `r` | float | Красный (0.0 - 1.0) |
+| `g` | float | Зелёный (0.0 - 1.0) |
+| `b` | float | Синий (0.0 - 1.0) |
+| `a` | float | Альфа (0.0 - 1.0) |
+
+Внутри: `ClearRenderTargetView(rtv, clearColor)`.
+
+### dxPresent()
+
+Показывает кадр.
+
+Внутри: `swapChain->Present(1, 0)` (VSync включён).
+
+## Буферы
+
+### dxCreateBuffer(size, data) -> buffer
+
+Создаёт `ID3D11Buffer` (vertex или index).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `size` | int | Размер данных в байтах |
+| `data` | int | Указатель на данные (из alloc/peek) |
+
+Тип буфера определяется контекстом использования.
+
+### dxSetVertexBuffer(buffer, stride)
+
+Устанавливает vertex buffer на input assembler.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `buffer` | int | Handle буфера |
+| `stride` | int | Размер вершины в байтах |
+
+### dxSetIndexBuffer(buffer)
+
+Устанавливает index buffer.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `buffer` | int | Handle буфера |
+
+### dxDrawIndexed(indexCount)
+
+Рисует indexed primitives.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `indexCount` | int | Количество индексов |
+
+Внутри: `context->DrawIndexed(indexCount, 0, 0)`.
+
+## Шейдеры
+
+### dxCreateVertexShader(hlsl) -> shader
+
+Компилирует vertex shader из HLSL-строки.
+
+```zenith
+var vs: int = dxCreateVertexShader(
+    "float4 main(float2 pos : POSITION) : SV_POSITION { return float4(pos, 0, 1); }"
+)
+```
+
+### dxCreatePixelShader(hlsl) -> shader
+
+Компилирует pixel shader из HLSL-строки.
+
+```zenith
+var ps: int = dxCreatePixelShader(
+    "float4 main(float4 pos : SV_POSITION) : SV_TARGET { return float4(1, 0, 0, 1); }"
+)
+```
+
+### dxSetShaders(vs, ps)
+
+Устанавливает vertex и pixel shaders.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `vs` | int | Vertex shader handle |
+| `ps` | int | Pixel shader handle |
+
+## Пример: треугольник
+
+```zenith
+app gui
+type dx
+
+func main()
+    dxInit(800, 600, "DX11 Triangle")
+
+    # Вершины треугольника (x, y, z, r, g, b)
+    # 3 вершины × 6 float × 4 байта = 72 байта
+    var verts: int = alloc(72)
+    poke(verts,      0x3F800000)    # 1.0f (x0)
+    poke(verts + 4,  0xBF800000)    # -1.0f (y0)
+    poke(verts + 8,  0x00000000)    # 0.0f (z0)
+    poke(verts + 12, 0x3F800000)    # 1.0f (r0)
+    poke(verts + 16, 0x00000000)    # 0.0f (g0)
+    poke(verts + 20, 0x00000000)    # 0.0f (b0)
+
+    poke(verts + 24, 0xBF800000)    # -1.0f (x1)
+    poke(verts + 28, 0xBF800000)    # -1.0f (y1)
+    poke(verts + 32, 0x00000000)    # 0.0f (z1)
+    poke(verts + 36, 0x00000000)    # 0.0f (r1)
+    poke(verts + 40, 0x3F800000)    # 1.0f (g1)
+    poke(verts + 44, 0x00000000)    # 0.0f (b1)
+
+    poke(verts + 48, 0x00000000)    # 0.0f (x2)
+    poke(verts + 52, 0x3F800000)    # 1.0f (y2)
+    poke(verts + 56, 0x00000000)    # 0.0f (z2)
+    poke(verts + 60, 0x00000000)    # 0.0f (r2)
+    poke(verts + 64, 0x00000000)    # 0.0f (g2)
+    poke(verts + 68, 0x3F800000)    # 1.0f (b2)
+
+    var vb: int = dxCreateBuffer(72, verts)
+    dxSetVertexBuffer(vb, 24)       # 6 float × 4 байта = 24
+
+    # Шейдеры
+    var vs: int = dxCreateVertexShader("...")
+    var ps: int = dxCreatePixelShader("...")
+    dxSetShaders(vs, ps)
+
+    while getKey(27) == 0
+        dxClear(0.1, 0.1, 0.2, 1.0)
+        dxDrawIndexed(3)
+        dxPresent()
+    end
+
+    dxClose()
+end
+```
+
+## Сравнение с Software Rendering
+
+| Аспект | `type sr` | `type dx` |
+|--------|-----------|-----------|
+| API | GDI (BitBlt) | DirectX 11 |
+| Производительность | CPU-bound | GPU-bound |
+| drawPixel | Прямо в framebuffer | Не нужен (шейдеры) |
+| clear | rep stosd | ClearRenderTargetView |
+| present | BitBlt + PeekMessage | SwapChain->Present |
+| Треугольники | drawPixel-цикл | DrawIndexed |
+| Память | CPU (стек/alloc) | GPU буферы |
+
+## Когда использовать
+
+| Задача | Рекомендация |
+|--------|-------------|
+| Простые 2D-игры | `type sr` |
+| Pixel art | `type sr` |
+| 3D-графика | `type dx` |
+| Шейдерные эффекты | `type dx` |
+| Максимальная производительность | `type dx` |
+| Простота кода | `type sr` |
