@@ -6,12 +6,16 @@
 
 enum class TypeKind { Int, Float, Bool, Void, String, Vec2, Vec3, Color, Entity, Struct };
 
-enum class AppType { Console, GUI, EFI };
+enum class AppType { Console, GUI, EFI, Bare };
 enum class RenderType { Software, DX11 };
+enum class AddressSpace { Virtual, Physical };
+enum class Mode { Easy, Hard };
 
 struct Type {
     TypeKind kind = TypeKind::Void;
     std::string structName;
+    bool isPtr = false;
+    AddressSpace addrSpace = AddressSpace::Virtual;
 };
 
 struct Node {
@@ -42,6 +46,14 @@ struct BinaryExpr : Expr {
     std::unique_ptr<Expr> left;
     std::string op;
     std::unique_ptr<Expr> right;
+};
+
+struct DerefExpr : Expr {
+    std::unique_ptr<Expr> ptr;
+};
+
+struct AddressOfExpr : Expr {
+    std::string name;
 };
 
 struct UnaryExpr : Expr {
@@ -95,6 +107,11 @@ struct AssignStmt : Stmt {
     std::unique_ptr<Expr> value;
 };
 
+struct PtrAssignStmt : Stmt {
+    std::unique_ptr<Expr> ptr;
+    std::unique_ptr<Expr> value;
+};
+
 struct IfStmt : Stmt {
     std::unique_ptr<Expr> condition;
     Block thenBlock;
@@ -104,6 +121,16 @@ struct IfStmt : Stmt {
 struct WhileStmt : Stmt {
     std::unique_ptr<Expr> condition;
     Block body;
+};
+
+struct AsmInstr {
+    std::string mnemonic;
+    std::string op1;
+    std::string op2;
+};
+
+struct AsmStmt : Stmt {
+    std::vector<AsmInstr> instrs;
 };
 
 struct ForStmt : Stmt {
@@ -145,5 +172,6 @@ struct Program {
     std::vector<std::unique_ptr<StructDecl>> structs;
     AppType appType = AppType::Console;
     RenderType renderType = RenderType::Software;
+    Mode mode = Mode::Hard;
     bool isLibrary = false;  // true if # [no_main] is present
 };

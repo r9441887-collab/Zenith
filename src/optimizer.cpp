@@ -66,6 +66,8 @@ void Optimizer::collectFuncRefsInStmt(Stmt* stmt, std::unordered_set<std::string
         collectFuncRefsInExpr(forStmt->end.get(), refs, prog);
         collectFuncRefsInExpr(forStmt->step.get(), refs, prog);
         collectFuncRefsInBlock(forStmt->body, refs, prog);
+    } else if (dynamic_cast<AsmStmt*>(stmt)) {
+        // AsmStmt may reference any function/global — conservatively mark nothing
     }
 }
 
@@ -125,6 +127,8 @@ void Optimizer::collectGlobalRefsInStmt(Stmt* stmt, std::unordered_set<std::stri
         collectGlobalRefsInExpr(forStmt->end.get(), refs, prog);
         collectGlobalRefsInExpr(forStmt->step.get(), refs, prog);
         collectGlobalRefsInBlock(forStmt->body, refs, prog);
+    } else if (dynamic_cast<AsmStmt*>(stmt)) {
+        // AsmStmt may reference any function/global — conservatively mark nothing
     }
 }
 

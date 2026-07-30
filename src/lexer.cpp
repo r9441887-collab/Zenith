@@ -122,6 +122,9 @@ Token Lexer::scanIdentOrKeyword() {
         {"void", TokenKind::TypeVoid}, {"vec2", TokenKind::TypeVec2},
         {"vec3", TokenKind::TypeVec3}, {"color", TokenKind::TypeColor},
         {"entity", TokenKind::TypeEntity},
+        {"virt", TokenKind::Virt}, {"phys", TokenKind::Phys},
+        {"ptr", TokenKind::Ptr}, {"asm", TokenKind::Asm},
+        {"vide", TokenKind::Vide},
     };
 
     auto it = keywords.find(word);

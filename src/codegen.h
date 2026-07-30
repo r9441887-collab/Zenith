@@ -40,13 +40,17 @@ public:
     void emitDX11Present();
     void emitDX11Cleanup();
 
+    // ===== codegen_dx11_shaders.cpp =====
+    bool tryDX11Call(CallExpr* call, int& resultReg);
+
     // ===== codegen_sw.cpp =====
     void emitSWInit();
     void emitSWPresent();
     void emitSWCleanup();
 
-private:
     void emit8(uint8_t b);
+
+private:
     void emit16(uint16_t v);
     void emit32(uint32_t v);
     void emit64(uint64_t v);
@@ -118,6 +122,8 @@ private:
     struct JmpFixup { size_t codePos; int targetPos; };
     struct StrFixup { size_t codePos; int stringIndex; };
     struct ImportCallFixup { size_t codePos; std::string funcName; std::string dllName; };
+    struct EmbeddedLEAFixup { size_t codePos; bool isRdata; };
+    std::vector<EmbeddedLEAFixup> embeddedLEAFixups;
     std::vector<CallFixup> callFixups;
     std::vector<FuncRefFixup> funcRefFixups;
     std::vector<JmpFixup> jmpFixups;
@@ -227,7 +233,7 @@ private:
     void readEmbeddedLibs();
     void emitEmbeddedLoader();
 
-    uint32_t importDescCount = 1;
+    uint32_t importDescCount = 0;
     uint32_t importDataSize = 0;
 
     std::filesystem::path compilerDir;

@@ -1066,7 +1066,7 @@ int Codegen::emitExpr(Expr* expr) {
             stringPool.push_back(str->value);
         }
         int r = allocReg(); if (r < 0) r = 0;
-        emit8(0x48);
+        emit8(0x48); emit8(0x8D);
         uint8_t modrm;
         if (r == 0) modrm = 0x05;
         else if (r == 1) modrm = 0x0D;
@@ -2600,6 +2600,15 @@ void Codegen::emitFunction(FunctionDecl* func) {
 void Codegen::emitEntryPoint() {
     entryPointCodeOffset = code.size();
 
+    if (prog.appType == AppType::Bare) {
+        entryPointCodeOffset = code.size();
+        bool hm = funcOffsets.count("main") > 0;
+        if (hm) { emit8(0xE8); size_t fp=code.size(); emit32(0); callFixups.push_back({fp,"main"}); }
+        else if (!prog.functions.empty()) { emit8(0xE8); size_t fp=code.size(); emit32(0); callFixups.push_back({fp,prog.functions[0]->name}); }
+        int l = newLabel(); emitLabel(l); emit8(0xF4); emit8(0xEB); emit8(0xFC);
+        return;
+    }
+
     if (prog.appType == AppType::EFI) {
         // EFI entry point: EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         // rcx = ImageHandle, rdx = SystemTable
@@ -2717,7 +2726,7 @@ void Codegen::generateWide(const std::wstring& outputPath) {
     collectStrings();
     computeSectionRVAs();
 
-    if (prog.appType != AppType::EFI) {
+    if (prog.appType != AppType::EFI && prog.appType != AppType::Bare) {
         buildImportData();
     }
 
@@ -2765,6 +2774,13 @@ void Codegen::generateWide(const std::wstring& outputPath) {
         int ulen = WideCharToMultiByte(0 /*CP_ACP*/, 0, outputPath.c_str(), -1, NULL, 0, NULL, NULL);
         std::string narrowOut(ulen > 0 ? ulen - 1 : 0, '\0');
         if (ulen > 1) WideCharToMultiByte(0 /*CP_ACP*/, 0, outputPath.c_str(), -1, &narrowOut[0], ulen, NULL, NULL);
-        buildPE(narrowOut);
+        if (prog.appType == AppType::Bare) {
+            std::ofstream rf(narrowOut, std::ios::binary);
+            rf.write((const char*)code.data(), code.size());
+            rf.close();
+            std::cout << "Compiled raw: " << narrowOut << " (" << code.size() << " B)\n";
+        } else {
+            buildPE(narrowOut);
+        }
     }
 }

@@ -274,6 +274,10 @@ void Codegen::emitDX11Present() {
         for (size_t i = 0; i < stringPool.size(); i++) {
             if (stringPool[i] == iidBytes) { iidIdx = (int)i; break; }
         }
+        if (iidIdx < 0) {
+            iidIdx = (int)stringPool.size();
+            stringPool.push_back(iidBytes);
+        }
         heapFixups.push_back({code.size(), stringRVA + stringOffsets[iidIdx]});
     }
     emit32(0);

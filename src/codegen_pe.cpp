@@ -385,7 +385,7 @@ void Codegen::fixupSectionRVAs() {
 
     // 1. Fix import descriptors in .rdata
     // Each descriptor: [ILT RVA(4)][timestamp(4)][fwd(4)][Name RVA(4)][IAT RVA(4)]
-    if (prog.appType != AppType::EFI) {
+    if (prog.appType != AppType::EFI && prog.appType != AppType::Bare) {
         for (uint32_t i = 0; i < importDescCount; i++) {
             size_t base = i * 20;
             uint32_t ilt = rdDW(rdata, base);
@@ -445,6 +445,16 @@ void Codegen::fixupSectionRVAs() {
         for (auto& pRVA : emb.funcPtrRVAs) pRVA += dData;
     }
 
+    // 5c. Fix embedded loader lea/mov RIP-relative displacements in emitted code
+    // These were computed at emit time using old (unadjusted) RVAs.
+    // Since .text doesn't move, each displacement needs +dRdata or +dData.
+    for (auto& elf : embeddedLEAFixups) {
+        int32_t oldDisp = (int32_t)rdDW(code, elf.codePos);
+        int32_t adjustment = elf.isRdata ? (int32_t)dRdata : (int32_t)dData;
+        int32_t newDisp = oldDisp + adjustment;
+        wrDW(code, elf.codePos, (uint32_t)newDisp);
+    }
+
     // 6. Update section RVAs
     rdataRVA = newRdataRVA;
     dataRVA = newDataRVA;
@@ -457,8 +467,9 @@ static std::vector<std::string> parseDllExports(const std::vector<uint8_t>& byte
     if (bytes.size() < 64) return result;
     if (bytes[0] != 'M' || bytes[1] != 'Z') return result;
 
-    uint32_t peOff = *(uint32_t*)&bytes[0x3C];
-    if (peOff + 24 >= bytes.size()) return result;
+    uint32_t peOff;
+    memcpy(&peOff, &bytes[0x3C], sizeof(peOff));
+    if (static_cast<size_t>(peOff) + 24 >= bytes.size()) return result;
     if (bytes[peOff] != 'P' || bytes[peOff+1] != 'E') return result;
 
     uint16_t numSections = *(uint16_t*)&bytes[peOff + 6];
@@ -726,6 +737,8 @@ void Codegen::buildImportData() {
             funcName.find("DispatchMessageA") == 0 || funcName.find("GetAsyncKeyState") == 0 ||
             funcName.find("PostQuitMessage") == 0 || funcName.find("BeginPaint") == 0 ||
             funcName.find("EndPaint") == 0 ||
+            funcName.find("MessageBoxA") == 0 || funcName.find("MessageBoxW") == 0 ||
+            funcName.find("MessageBox") == 0 ||
             funcName.find("CreateWindowEx") == 0 || funcName.find("DefWindowProc") == 0 ||
             funcName.find("RegisterClass") == 0) {
             return "user32.dll";
@@ -1173,6 +1186,8 @@ void Codegen::buildPE(const std::string& outputPath) {
             code[icf.codePos + 1] = (uint8_t)((disp >> 8) & 0xFF);
             code[icf.codePos + 2] = (uint8_t)((disp >> 16) & 0xFF);
             code[icf.codePos + 3] = (uint8_t)((disp >> 24) & 0xFF);
+        } else {
+            std::cerr << "Error: import call fixup not found in externFuncMap: '" << icf.funcName << "'\n";
         }
     }
 
@@ -1445,8 +1460,10 @@ void Codegen::emitEmbeddedLoader() {
         emit8(0xB9); emit32(520);
         emit8(0x48); emit8(0x8D); emit8(0x15);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "GetTempPathA", "kernel32.dll"});
@@ -1455,13 +1472,17 @@ void Codegen::emitEmbeddedLoader() {
         // 2. lstrcatA(fullPath, "\\dllName")
         emit8(0x48); emit8(0x8D); emit8(0x0D);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0x48); emit8(0x8D); emit8(0x15);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)emb.dllPathStrRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, true});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "lstrcatA", "kernel32.dll"});
@@ -1470,8 +1491,10 @@ void Codegen::emitEmbeddedLoader() {
         // 3. CreateFileA(fullPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL)
         emit8(0x48); emit8(0x8D); emit8(0x0D);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xBA); emit32(0x40000000);        // mov edx, GENERIC_WRITE
         emit8(0x45); emit8(0x31); emit8(0xC0);  // xor r8d, r8d
@@ -1492,23 +1515,29 @@ void Codegen::emitEmbeddedLoader() {
         // Save hFile: mov [rip+hFile], rax
         emit8(0x48); emit8(0x89); emit8(0x05);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedHFileRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
 
         // 4. WriteFile(hFile, dllData, dllSize, &written, NULL)
         emit8(0x48); emit8(0x89); emit8(0xC1);  // mov rcx, rax (hFile)
         emit8(0x48); emit8(0x8D); emit8(0x15);  // lea rdx, [rip+blob]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)emb.blobRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0x41); emit8(0xB8);                // mov r8d, imm32 (blobSize)
         emit32(emb.blobSize);
         emit8(0x4C); emit8(0x8D); emit8(0x0D);  // lea r9, [rip+written]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedWrittenRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0x48); emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x20);
         emit32(0);  // [rsp+0x20] = NULL
@@ -1519,8 +1548,10 @@ void Codegen::emitEmbeddedLoader() {
         // 5. CloseHandle(hFile)
         emit8(0x48); emit8(0x8B); emit8(0x0D);  // mov rcx, [rip+hFile]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedHFileRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "CloseHandle", "kernel32.dll"});
@@ -1529,8 +1560,10 @@ void Codegen::emitEmbeddedLoader() {
         // 6. LoadLibraryA(fullPath)
         emit8(0x48); emit8(0x8D); emit8(0x0D);  // lea rcx, [rip+fullPath]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "LoadLibraryA", "kernel32.dll"});
@@ -1538,8 +1571,10 @@ void Codegen::emitEmbeddedLoader() {
         // Save hModule
         emit8(0x48); emit8(0x89); emit8(0x05);  // mov [rip+hModule], rax
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedHModuleRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
 
         // 7. GetProcAddress(hModule, "funcName") for each function
@@ -1547,14 +1582,18 @@ void Codegen::emitEmbeddedLoader() {
             // mov rcx, [rip+hModule]
             emit8(0x48); emit8(0x8B); emit8(0x0D);
             {
+                size_t fp = code.size();
                 int64_t d = (int64_t)embeddedHModuleRVA - (int64_t)(textRVA + code.size() + 4);
                 emit32((uint32_t)d);
+                embeddedLEAFixups.push_back({fp, false});
             }
             // lea rdx, [rip+funcName]
             emit8(0x48); emit8(0x8D); emit8(0x15);
             {
+                size_t fp = code.size();
                 int64_t d = (int64_t)emb.funcNameRVAs[f] - (int64_t)(textRVA + code.size() + 4);
                 emit32((uint32_t)d);
+                embeddedLEAFixups.push_back({fp, true});
             }
             emit8(0xFF); emit8(0x15);
             importCallFixups.push_back({code.size(), "GetProcAddress", "kernel32.dll"});
@@ -1562,16 +1601,20 @@ void Codegen::emitEmbeddedLoader() {
             // Store result: mov [rip+funcSlot], rax
             emit8(0x48); emit8(0x89); emit8(0x05);
             {
+                size_t fp = code.size();
                 int64_t d = (int64_t)emb.funcPtrRVAs[f] - (int64_t)(textRVA + code.size() + 4);
                 emit32((uint32_t)d);
+                embeddedLEAFixups.push_back({fp, false});
             }
         }
 
         // 8. DeleteFileA(fullPath)
         emit8(0x48); emit8(0x8D); emit8(0x0D);  // lea rcx, [rip+fullPath]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "DeleteFileA", "kernel32.dll"});

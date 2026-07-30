@@ -32,6 +32,7 @@ private:
     std::unique_ptr<Expr> parseLogicalAnd();
     std::unique_ptr<Expr> parseComparison();
     std::unique_ptr<Expr> parseTerm();
+    std::unique_ptr<Expr> parseUnary();
     std::unique_ptr<Expr> parseFactor();
     std::unique_ptr<Expr> parsePrimary();
     std::unique_ptr<Expr> parseCallOrIdent();
@@ -45,4 +46,5 @@ private:
     const std::vector<Token>& tokens;
     size_t pos;
     AppType appType = AppType::Console;
+    Mode mode = Mode::Hard;
 };

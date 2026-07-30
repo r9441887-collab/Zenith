@@ -9,7 +9,7 @@ Token Parser::peekNext() const {
     return Token{TokenKind::Eof, "", 0, 0.0, 0, 0};
 }
 Token Parser::previous() const { if (pos > 0) return tokens[pos - 1]; return {TokenKind::Error, "", 0, 0.0, 0, 0}; }
-Token Parser::advance() { Token t = tokens[pos]; if (!check(TokenKind::Eof)) pos++; return t; }
+Token Parser::advance() { if (tokens.empty() || pos >= tokens.size()) return {TokenKind::Eof, "", 0, 0.0, 0, 0}; Token t = tokens[pos]; if (!check(TokenKind::Eof)) pos++; return t; }
 bool Parser::check(TokenKind kind) const { return peek().kind == kind; }
 
 bool Parser::match(TokenKind kind) {
@@ -24,6 +24,27 @@ Token Parser::consume(TokenKind kind, const std::string& msg) {
 }
 
 Type Parser::parseType() {
+    // phys/virt qualifiers
+    AddressSpace addrSpace = AddressSpace::Virtual;
+    if (check(TokenKind::Virt)) { advance(); }
+    else if (check(TokenKind::Phys)) {
+        advance(); addrSpace = AddressSpace::Physical;
+        if (mode == Mode::Easy) { throw std::runtime_error("phys not in easy mode"); }
+        if (appType != AppType::EFI && appType != AppType::Bare)
+            throw std::runtime_error("phys requires EFI/bare");
+    }
+    // ptr<T> handling
+    if (check(TokenKind::Ptr)) {
+        advance(); Type inner;
+        if (check(TokenKind::TypeInt))    { advance(); inner = {TypeKind::Int}; }
+        else if (check(TokenKind::TypeFloat))  { advance(); inner = {TypeKind::Float}; }
+        else if (check(TokenKind::TypeBool))   { advance(); inner = {TypeKind::Bool}; }
+        else if (check(TokenKind::TypeString)) { advance(); inner = {TypeKind::String}; }
+        else if (check(TokenKind::TypeVoid))   { advance(); inner = {TypeKind::Void}; }
+        else if (check(TokenKind::Ident)) { inner.kind=TypeKind::Struct; inner.structName=advance().text; }
+        else throw std::runtime_error("Expected type after ptr");
+        inner.isPtr=true; inner.addrSpace=addrSpace; return inner;
+    }
     switch (peek().kind) {
         case TokenKind::TypeInt:    advance(); return {TypeKind::Int};
         case TokenKind::TypeFloat:  advance(); return {TypeKind::Float};
@@ -250,6 +271,32 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (check(TokenKind::If)) return parseIf();
     if (check(TokenKind::While)) return parseWhile();
     if (check(TokenKind::For)) return parseFor();
+    if (check(TokenKind::Asm)) {
+        advance();
+        if (mode == Mode::Easy) { throw std::runtime_error("asm not in easy mode"); }
+        if (appType != AppType::EFI && appType != AppType::Bare)
+            throw std::runtime_error("asm requires EFI or bare");
+        consume(TokenKind::LBrace, "Expected '{' after 'asm'");
+        auto stmt = std::make_unique<AsmStmt>();
+        while (!check(TokenKind::Eof) && !check(TokenKind::RBrace)) {
+            if (check(TokenKind::Newline)) { advance(); continue; }
+            AsmInstr instr;
+            instr.mnemonic = consume(TokenKind::Ident, "Expected mnemonic").text;
+            for (auto& c : instr.mnemonic) c = (char)tolower((unsigned char)c);
+            if (!check(TokenKind::Newline) && !check(TokenKind::RBrace)) {
+                if (check(TokenKind::Ident) || check(TokenKind::Number) || check(TokenKind::Minus))
+                    instr.op1 = advance().text;
+                if (check(TokenKind::Comma)) { advance();
+                    if (check(TokenKind::Ident) || check(TokenKind::Number) || check(TokenKind::Minus))
+                        instr.op2 = advance().text; }
+            }
+            stmt->instrs.push_back(std::move(instr));
+            if (check(TokenKind::Newline)) advance();
+        }
+        consume(TokenKind::RBrace, "Expected '}' after asm");
+        if (check(TokenKind::Newline)) advance();
+        return stmt;
+    }
     if (check(TokenKind::Return)) {
         advance();
         auto stmt = std::make_unique<ReturnStmt>();
@@ -291,7 +338,6 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
             scan + 1 < tokens.size() &&
             tokens[scan + 1].kind == TokenKind::Eq) {
             std::string firstName = advance().text;
-            advance();
             auto stmt = std::make_unique<AssignStmt>();
             stmt->name = firstName;
             while (check(TokenKind::Dot)) {
@@ -305,6 +351,17 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
             return stmt;
         }
     }
+    // *ptr = value (pointer assignment)
+    if (check(TokenKind::Star)) {
+        advance();
+        auto stmt = std::make_unique<PtrAssignStmt>();
+        stmt->ptr = parseUnary();
+        consume(TokenKind::Eq, "Expected '=' after pointer expression");
+        stmt->value = parseExpression();
+        if (check(TokenKind::Newline)) advance();
+        return stmt;
+    }
+
     auto stmt = std::make_unique<ExprStmt>();
     stmt->expr = parseExpression();
     if (check(TokenKind::Newline)) advance();
@@ -429,10 +486,10 @@ std::unique_ptr<Expr> Parser::parseTerm() {
 }
 
 std::unique_ptr<Expr> Parser::parseFactor() {
-    auto left = parsePrimary();
+    auto left = parseUnary();
     while (check(TokenKind::Star) || check(TokenKind::Slash)) {
         auto op = advance();
-        auto right = parsePrimary();
+        auto right = parseUnary();
         auto bin = std::make_unique<BinaryExpr>();
         bin->left = std::move(left);
         bin->op = op.text;
@@ -440,6 +497,20 @@ std::unique_ptr<Expr> Parser::parseFactor() {
         left = std::move(bin);
     }
     return left;
+}
+
+std::unique_ptr<Expr> Parser::parseUnary() {
+    if (check(TokenKind::Star)) { advance(); auto d = std::make_unique<DerefExpr>(); d->ptr = parseUnary(); return d; }
+    if (check(TokenKind::Amp)) { advance(); auto a = std::make_unique<AddressOfExpr>(); a->name = consume(TokenKind::Ident, "Expected var").text; return a; }
+    if (check(TokenKind::Bang)) { advance(); auto u = std::make_unique<UnaryExpr>(); u->op = "!"; u->operand = parseUnary(); return u; }
+    if (check(TokenKind::Minus)) {
+        advance();
+        if (check(TokenKind::Number)) { auto n = std::make_unique<NumberExpr>(); n->value = -advance().intVal; return n; }
+        if (check(TokenKind::FloatLit)) { auto f = std::make_unique<FloatExpr>(); f->value = -advance().floatVal; return f; }
+        auto u = std::make_unique<UnaryExpr>(); u->op = "-"; u->operand = parseUnary(); return u;
+    }
+    if (check(TokenKind::Plus)) { advance(); return parseUnary(); }
+    return parsePrimary();
 }
 
 std::unique_ptr<Expr> Parser::parsePrimary() {
@@ -482,33 +553,6 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         } else {
             expr = parseCallOrIdent();
         }
-    } else if (check(TokenKind::Minus)) {
-        advance();
-        if (check(TokenKind::Number)) {
-            auto n = std::make_unique<NumberExpr>();
-            n->value = -advance().intVal;
-            expr = std::move(n);
-        } else if (check(TokenKind::FloatLit)) {
-            auto f = std::make_unique<FloatExpr>();
-            f->value = -advance().floatVal;
-            expr = std::move(f);
-        } else {
-            auto operand = parsePrimary();
-            auto unary = std::make_unique<UnaryExpr>();
-            unary->op = "-";
-            unary->operand = std::move(operand);
-            expr = std::move(unary);
-        }
-    } else if (check(TokenKind::Plus)) {
-        advance();
-        expr = parsePrimary();
-    } else if (check(TokenKind::Bang)) {
-        advance();
-        auto operand = parsePrimary();
-        auto unary = std::make_unique<UnaryExpr>();
-        unary->op = "!";
-        unary->operand = std::move(operand);
-        expr = std::move(unary);
     } else if (check(TokenKind::True)) {
         advance();
         auto n = std::make_unique<NumberExpr>();
@@ -649,8 +693,10 @@ void Parser::parseAppType(Program& prog) {
             prog.appType = AppType::Console;
         } else if (type == "efi") {
             prog.appType = AppType::EFI;
+        } else if (type == "bare") {
+            prog.appType = AppType::Bare;
         } else {
-            std::cerr << "Error at line " << previous().line << ": expected 'gui', 'console', or 'efi' after 'app', got '" << type << "'\n";
+            std::cerr << "Error at line " << previous().line << ": expected 'gui', 'console', 'efi', or 'bare' after 'app', got '" << type << "'\n";
             throw std::runtime_error("Invalid app type");
         }
     } else {
@@ -677,8 +723,21 @@ Program Parser::parse() {
         parseAppType(prog);
         appType = prog.appType;
     } else {
-        std::cerr << "Error at line " << peek().line << ": missing 'app' directive. Use 'app gui', 'app gui dx', 'app gui sr', 'app console', or 'app efi' at the top of the file.\n";
+        std::cerr << "Error at line " << peek().line << ": missing 'app' directive. Use 'app gui', 'app gui dx', 'app console', 'app efi', or 'app bare' at the top of the file.\n";
         throw std::runtime_error("Missing app directive");
+    }
+
+    // Optional: vide easy | vide hard
+    while (check(TokenKind::Newline)) advance();
+    if (check(TokenKind::Vide)) {
+        advance();
+        if (check(TokenKind::Ident)) {
+            std::string md = advance().text;
+            if (md == "easy") { prog.mode = Mode::Easy; mode = Mode::Easy; }
+            else if (md == "hard") { prog.mode = Mode::Hard; mode = Mode::Hard; }
+            else throw std::runtime_error("Invalid vide mode");
+        }
+        if (check(TokenKind::Newline)) advance();
     }
 
     auto trySync = [&]() {

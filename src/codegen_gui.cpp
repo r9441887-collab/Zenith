@@ -77,6 +77,11 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
         emit8(0x4C); emit8(0x8B); emit8(0x5B); emit8(0x28);  // mov r11, [rbx+40] (framebuffer)
         emit8(0x44); emit8(0x8B); emit8(0x63); emit8(0x20);  // mov r12d, [rbx+32] (width)
 
+        // If framebuf is NULL, skip draw
+        emit8(0x4D); emit8(0x85); emit8(0xDB);  // test r11, r11
+        int skipDrawPixel = newLabel();
+        emitJcc("==", skipDrawPixel);
+
         // Compute address: framebuf + (y * width + x) * 4
         emit8(0x4C); emit8(0x89); emit8(0xC8);  // mov rax, r9 (y)
         emit8(0x49); emit8(0x0F); emit8(0xAF); emit8(0xC4);  // imul rax, r12 (width)
@@ -86,6 +91,8 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
 
         // Store color
         emit8(0x44); emit8(0x89); emit8(0x10);  // mov [rax], r10d
+
+        emitLabel(skipDrawPixel);
 
         regsUsed = 1;
         resultReg = 0;
@@ -113,6 +120,11 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
         emit8(0x44); emit8(0x8B); emit8(0x43); emit8(0x20);  // mov r8d, [rbx+32] (width)
         emit8(0x44); emit8(0x8B); emit8(0x5B); emit8(0x24);  // mov r11d, [rbx+36] (height)
 
+        // If framebuf is NULL, skip clear
+        emit8(0x4D); emit8(0x85); emit8(0xC9);  // test r9, r9
+        int skipClear = newLabel();
+        emitJcc("==", skipClear);
+
         // rcx = width * height
         emit8(0x4C); emit8(0x89); emit8(0xC1);  // mov rcx, r8
         emit8(0x41); emit8(0x0F); emit8(0xAF); emit8(0xCB);  // imul rcx, r11
@@ -123,6 +135,7 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
         // mov ecx, ecx (zero-extend ecx to rcx, already done)
         emit8(0xF3); emit8(0xAB);  // rep stosd
         emit8(0x5F);  // pop rdi
+        emitLabel(skipClear);
 
         regsUsed = 1;
         resultReg = 0;
@@ -480,6 +493,11 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
             importCallFixups.push_back({code.size(), "D3D11CreateDeviceAndSwapChain", "d3d11.dll"});
             emit32(0);
 
+            // Check HRESULT, skip DX11 init if failed
+            int dx11Failed = newLabel();
+            emit8(0x85); emit8(0xC0);  // test eax, eax
+            emitJcc("<", dx11Failed);  // jl = jump if sign (FAILED)
+
             // Store device, context, swapChain in globals
             // [globals+56] = device
             emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0xC8); // rax = device
@@ -538,6 +556,9 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
             emit8(0x4C); emit8(0x8D); emit8(0x8C); emit8(0x24); emit32(0x88); // r9 = &rtv
             emit8(0xFF); emit8(0xD0);                             // call rax
             // rtv is now at [rsp+0x88]
+            // Store rtv in globals+80 for cleanup
+            emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0x88); // rax = [rsp+0x88]
+            emit8(0x48); emit8(0x89); emit8(0x43); emit8(0x50);               // [rbx+80] = rtv
 
             // --- Release backBuffer ---
             // backBuffer->vtable[2](backBuffer) = Release
@@ -614,6 +635,21 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
             // Store mapped.pData in globals+40 (framebuffer pointer)
             emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0xD0); // rax = mapped.pData
             emit8(0x48); emit8(0x89); emit8(0x43); emit8(0x28);  // [rbx+40] = framebuf
+
+            // Jump over error handler
+            int dx11Done = newLabel();
+            emitJmp(dx11Done);
+            emitLabel(dx11Failed);
+
+            // D3D11CreateDeviceAndSwapChain failed - zero out COM pointers and framebuf
+            emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x38); emit32(0);  // [rbx+56] = device = 0
+            emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x40); emit32(0);  // [rbx+64] = context = 0
+            emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x48); emit32(0);  // [rbx+72] = swapChain = 0
+            emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x50); emit32(0);  // [rbx+80] = rtv = 0
+            emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x58); emit32(0);  // [rbx+88] = stagingTexture = 0
+            emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x28); emit32(0);  // [rbx+40] = framebuf = 0
+
+            emitLabel(dx11Done);
 
             // Restore stack
             emit8(0x48); emit8(0x81); emit8(0xC4); emit32(0x120);
@@ -710,6 +746,12 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
         emit32(0);
 
         if (prog.renderType == RenderType::DX11) {
+            // If swapChain is NULL, skip DX11 rendering
+            emit8(0x48); emit8(0x8B); emit8(0x43); emit8(0x48);  // rax = [rbx+72] = swapChain
+            emit8(0x48); emit8(0x85); emit8(0xC0);               // test rax, rax
+            int skipDx11Present = newLabel();
+            emitJcc("==", skipDx11Present);
+
             // ========== DX11 Present ==========
             // Stack: 0x80 bytes
             // [rsp+0x00..0x1F]: shadow
@@ -749,6 +791,10 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
                 int iidIdx = -1;
                 for (size_t i = 0; i < stringPool.size(); i++) {
                     if (stringPool[i] == iidBytes) { iidIdx = (int)i; break; }
+                }
+                if (iidIdx < 0) {
+                    iidIdx = (int)stringPool.size();
+                    stringPool.push_back(iidBytes);
                 }
                 heapFixups.push_back({code.size(), stringRVA + stringOffsets[iidIdx]});
             }
@@ -809,6 +855,8 @@ bool Codegen::tryGUICall(CallExpr* call, int& resultReg) {
 
             // Restore stack
             emit8(0x48); emit8(0x81); emit8(0xC4); emit32(0x80);
+
+            emitLabel(skipDx11Present);
 
         } else {
             // ========== Software Rendering (GDI) Present ==========

@@ -534,6 +534,15 @@ static int cmdBuild(bool libMode = false) {
                   << optResult.removedGlobals << " global(s)" << std::endl;
     }
 
+    if (prog.appType == AppType::EFI) {
+        fs::path p(outputFile);
+        outputFile = (p.parent_path() / (p.stem().string() + ".efi")).string();
+    }
+    if (prog.appType == AppType::Bare) {
+        size_t dot = outputFile.rfind('.');
+        if (dot != std::string::npos) outputFile = outputFile.substr(0, dot);
+        outputFile += ".bin";
+    }
     // Generate code
     prog.isLibrary = combinedIsLib;
     Codegen codegen(prog);
@@ -729,6 +738,18 @@ int main(int argc, char* argv[]) {
                   << optResult.removedGlobals << " global(s)" << std::endl;
     }
 
+    if (prog.appType == AppType::EFI) {
+        if (outputFile == "a.exe") { outputFile = "BOOTX64.EFI"; }
+        else { fs::path p(outputFile);
+            if (p.extension() != ".efi" && p.extension() != ".EFI")
+                outputFile = (p.parent_path() / (p.stem().string() + ".efi")).string(); }
+    }
+    if (prog.appType == AppType::Bare) {
+        if (outputFile == "a.exe") { outputFile = "a.bin"; }
+        else { size_t dot = outputFile.rfind('.');
+            if (dot != std::string::npos) outputFile = outputFile.substr(0, dot);
+            outputFile += ".bin"; }
+    }
     // Generate code
     Codegen codegen(prog);
     codegen.setCompilerDir(exeDir);
