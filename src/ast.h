@@ -6,10 +6,11 @@
 
 enum class TypeKind { Int, Float, Bool, Void, String, Vec2, Vec3, Color, Entity, Struct };
 
-enum class AppType { Console, GUI, EFI, Bare };
+enum class AppType { Console, GUI, EFI, BIOS, Bare };
 enum class RenderType { Software, DX11 };
 enum class AddressSpace { Virtual, Physical };
 enum class Mode { Easy, Hard };
+enum class KernelMode { Independent, Dependent };
 
 struct Type {
     TypeKind kind = TypeKind::Void;
@@ -137,7 +138,7 @@ struct ForStmt : Stmt {
     std::string varName;
     std::unique_ptr<Expr> start;
     std::unique_ptr<Expr> end;
-    std::unique_ptr<Expr> step;   // optional, nullptr means step=1
+    std::unique_ptr<Expr> step; // optional, nullptr means step=1
     Block body;
 };
 
@@ -162,7 +163,7 @@ struct StructDecl : Node {
 
 struct ImportDecl {
     std::string dllName;
-    std::string module;  // e.g. "thread" from @import("libs.dll::thread")
+    std::string module; // e.g. "thread" from @import("libs.dll::thread")
 };
 
 struct Program {
@@ -173,5 +174,6 @@ struct Program {
     AppType appType = AppType::Console;
     RenderType renderType = RenderType::Software;
     Mode mode = Mode::Hard;
-    bool isLibrary = false;  // true if # [no_main] is present
+    bool isLibrary = false; // true if # [no_main] is present
+    KernelMode kernelMode = KernelMode::Independent;
 };

@@ -43,6 +43,7 @@ public:
     // ===== codegen_dx11_shaders.cpp =====
     bool tryDX11Call(CallExpr* call, int& resultReg);
     bool tryEFICall(CallExpr* call, int& resultReg);
+    bool tryBIOSCall(CallExpr* call, int& resultReg);
     int ensureString(const std::string& s);
 
     // ===== codegen_sw.cpp =====

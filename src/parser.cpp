@@ -702,17 +702,54 @@ void Parser::parseAppType(Program& prog) {
             prog.appType = AppType::Console;
         } else if (type == "efi") {
             prog.appType = AppType::EFI;
+        } else if (type == "bios") {
+            prog.appType = AppType::BIOS;
         } else if (type == "bare") {
             prog.appType = AppType::Bare;
         } else {
-            std::cerr << "Error at line " << previous().line << ": expected 'gui', 'console', 'efi', or 'bare' after 'app', got '" << type << "'\n";
+            std::cerr << "Error at line " << previous().line << ": expected 'gui', 'console', 'efi', 'bios', or 'bare' after 'app', got '" << type << "'\n";
             throw std::runtime_error("Invalid app type");
         }
     } else {
-        std::cerr << "Error at line " << peek().line << ": expected 'gui', 'console', or 'efi' after 'app'\n";
+        std::cerr << "Error at line " << peek().line << ": expected 'gui', 'console', 'efi', 'bios', or 'bare' after 'app'\n";
         throw std::runtime_error("Expected app type");
     }
     if (check(TokenKind::Newline)) advance();
+
+    // =============================================================
+    // NEW: Parse optional kernel_mode: independent/dependent
+    // =============================================================
+    while (check(TokenKind::Newline)) advance();
+    
+    if (check(TokenKind::Ident) && peek().text == "kernel_mode") {
+        advance();
+        
+        // Expect colon
+        if (check(TokenKind::Colon)) {
+            advance();
+        } else {
+            std::cerr << "Error at line " << peek().line << ": expected ':' after 'kernel_mode'\n";
+            throw std::runtime_error("Expected ':' after kernel_mode");
+        }
+        
+        // Expect independent or dependent
+        if (check(TokenKind::Ident)) {
+            std::string km = advance().text;
+            if (km == "independent") {
+                prog.kernelMode = KernelMode::Independent;
+            } else if (km == "dependent") {
+                prog.kernelMode = KernelMode::Dependent;
+            } else {
+                std::cerr << "Error at line " << previous().line << ": expected 'independent' or 'dependent' after 'kernel_mode:', got '" << km << "'\n";
+                throw std::runtime_error("Invalid kernel_mode");
+            }
+        } else {
+            std::cerr << "Error at line " << peek().line << ": expected 'independent' or 'dependent'\n";
+            throw std::runtime_error("Expected kernel_mode value");
+        }
+        
+        if (check(TokenKind::Newline)) advance();
+    }
 }
 
 Program Parser::parse() {
