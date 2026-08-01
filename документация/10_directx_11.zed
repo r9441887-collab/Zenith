@@ -1,12 +1,11 @@
 # DirectX 11
 
-DirectX 11 включается директивой `type dx` после `app gui`.
+DirectX 11 включается директивой `app gui dx`.
 
 ## Быстрый старт
 
 ```zenith
-app gui
-type dx
+app gui dx\ntype dx
 
 func main()
     dxInit(800, 600, "DirectX 11 Demo")
@@ -118,6 +117,59 @@ end
 
 Внутри: `context->DrawIndexed(indexCount, 0, 0)`.
 
+## Константные буферы
+
+### dxCreateConstantBuffer(size, data) -> buffer
+
+Создаёт `ID3D11Buffer` с флагом `D3D11_BIND_CONSTANT_BUFFER`.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `size` | int | Размер данных в байтах |
+| `data` | int | Указатель на данные (из alloc/peek) |
+
+### dxUpdateBuffer(buffer, data)
+
+Обновляет содержимое буфера через `context->UpdateSubresource`.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `buffer` | int | Handle буфера |
+| `data` | int | Новый указатель на данные |
+
+### dxSetVertexConstants(buffer)
+
+Привязывает константный буфер к vertex shader (slot 0).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `buffer` | int | Handle константного буфера |
+
+Внутри: `context->VSSetConstantBuffers(0, 1, &buffer)`.
+
+### dxSetPixelConstants(buffer)
+
+Привязывает константный буфер к pixel shader (slot 0).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `buffer` | int | Handle константного буфера |
+
+Внутри: `context->PSSetConstantBuffers(0, 1, &buffer)`.
+
+### dxSetTopology(topology)
+
+Устанавливает топологию примитивов через `context->IASetPrimitiveTopology`.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `topology` | int | Константа из `D3D11_PRIMITIVE_TOPOLOGY` |
+
+Часто используемые значения:
+- `4` - `D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST` (по умолчанию)
+- `5` - `D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP`
+- `3` - `D3D11_PRIMITIVE_TOPOLOGY_LINELIST`
+
 ## Шейдеры
 
 ### dxCreateVertexShader(hlsl) -> shader
@@ -149,11 +201,97 @@ var ps: int = dxCreatePixelShader(
 | `vs` | int | Vertex shader handle |
 | `ps` | int | Pixel shader handle |
 
+## Input layout
+
+### dxCreateInputLayout(vs_hlsl) -> layout
+
+Создаёт `ID3D11InputLayout` с одним элементом `POSITION` (R32G32_FLOAT),
+скомпилировав vertex shader из HLSL-строки и извлекая байткод.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `vs_hlsl` | string | Исходник vertex shader |
+
+### dxCreateInputLayout(vs_hlsl, sem1, fmt1, off1, sem2, fmt2, off2, ...) -> layout
+
+Расширенная версия для нескольких элементов (по 3 аргумента на элемент).
+
+| Аргумент | Тип | Описание |
+|----------|-----|----------|
+| `vs_hlsl` | string | Исходник vertex shader |
+| `semN` | string | Имя семантики (например `"POSITION"`, `"TEXCOORD"`, `"COLOR"`) |
+| `fmtN` | int | Код `DXGI_FORMAT` (28 = R8G8B8A8_UNORM, 16 = R32G32_FLOAT, 6 = R32G32B32_FLOAT, 2 = R32G32B32A32_FLOAT) |
+| `offN` | int | Смещение в байтах или 0xFFFFFFFF (APPEND_ALIGNED_ELEMENT) |
+
+```zenith
+var layout: int = dxCreateInputLayout(
+    vs_hlsl,
+    "POSITION", 6, 0,
+    "COLOR", 28, 12
+)
+```
+
+### dxSetInputLayout(layout)
+
+Устанавливает input layout через `context->IASetInputLayout`.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `layout` | int | Handle input layout |
+
+## Текстуры
+
+### dxCreateTexture2D(width, height, data) -> texture
+
+Создаёт текстуру 2D формата `DXGI_FORMAT_R8G8B8A8_UNORM` с флагом
+`D3D11_BIND_SHADER_RESOURCE`.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `width` | int | Ширина текстуры в пикселях |
+| `height` | int | Высота текстуры в пикселях |
+| `data` | int | Указатель на данные (RGBA, width × height × 4 байта) |
+
+### dxCreateShaderResourceView(texture) -> srv
+
+Создаёт `ID3D11ShaderResourceView` для текстуры.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `texture` | int | Handle текстуры |
+
+Внутри: `device->CreateShaderResourceView(texture, NULL, &srv)`.
+
+### dxSetTexture(srv)
+
+Привязывает SRV к pixel shader (slot 0).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `srv` | int | Handle shader resource view |
+
+Внутри: `context->PSSetShaderResources(0, 1, &srv)`.
+
+## Сэмплеры
+
+### dxCreateSamplerState() -> sampler
+
+Создаёт `ID3D11SamplerState` с линейной фильтрацией и WRAP по всем осям.
+
+### dxSetSampler(sampler)
+
+Привязывает сэмплер к pixel shader (slot 0).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `sampler` | int | Handle сэмплера |
+
+Внутри: `context->PSSetSamplers(0, 1, &sampler)`.
+
 ## Пример: треугольник
 
 ```zenith
-app gui
-type dx
+app gui dx\ntype dx
 
 func main()
     dxInit(800, 600, "DX11 Triangle")

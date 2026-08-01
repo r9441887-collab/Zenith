@@ -178,6 +178,15 @@ void Codegen::collectStrings() {
         bool found = false;
         for (auto& s : stringPool) { if (s == iidBytes) { found = true; break; } }
         if (!found) stringPool.push_back(iidBytes);
+
+        // Shader builtins add strings to stringPool at codegen time (after
+        // stringOffsets is built). Pre-add them here so stringOffsets stay valid.
+        static const char* dxShaderStrings[] = { "main", "vs_5_0", "ps_5_0", "POSITION" };
+        for (const char* s : dxShaderStrings) {
+            bool strFound = false;
+            for (auto& p : stringPool) { if (p == s) { strFound = true; break; } }
+            if (!strFound) stringPool.push_back(s);
+        }
     }
 }
 
@@ -570,6 +579,17 @@ void Codegen::readEmbeddedLibs() {
         }
     }
 
+    // Expand transitive dependencies: libs_async.dll and libs_threadpool.dll
+    // import libs_thread.dll + libs_mutex.dll (same mapping as buildImportData)
+    if (neededDLLs.count("libs_async.dll")) {
+        neededDLLs.insert("libs_thread.dll");
+        neededDLLs.insert("libs_mutex.dll");
+    }
+    if (neededDLLs.count("libs_threadpool.dll")) {
+        neededDLLs.insert("libs_thread.dll");
+        neededDLLs.insert("libs_mutex.dll");
+    }
+
     if (!hasEmbeddedImports) return;
 
     std::set<std::string> foundDLLs;
@@ -680,6 +700,20 @@ void Codegen::readEmbeddedLibs() {
         foundDLLs.insert(dll);
         std::cout << "Embedded: " << dll << " (" << size << " bytes)" << std::endl;
     }
+
+    // Reorder embedded DLLs so dependencies are written+loaded before dependents.
+    // libs_async.dll / libs_threadpool.dll import libs_thread.dll + libs_mutex.dll,
+    // so thread/mutex must be LoadLibrary'd first (Windows resolves DLL imports
+    // against already-loaded modules).
+    auto depRank = [](const std::string& n) -> int {
+        if (n == "libs_thread.dll" || n == "libs_mutex.dll") return 0;
+        if (n == "libs_async.dll" || n == "libs_threadpool.dll") return 1;
+        return 2;
+    };
+    std::stable_sort(embeddedDLLs.begin(), embeddedDLLs.end(),
+        [&](const EmbeddedDLL& a, const EmbeddedDLL& b) {
+            return depRank(a.dllName) < depRank(b.dllName);
+        });
 }
 
 // ============== Import Data Builder ==============
@@ -797,6 +831,8 @@ void Codegen::buildImportData() {
             // DX11 mode: import d3d11.dll for D3D11CreateDeviceAndSwapChain
             dllFuncMap["d3d11.dll"].push_back("D3D11CreateDeviceAndSwapChain");
             dllFuncMap["d3d11.dll"].push_back("D3D11CreateDevice");
+            // Shader compilation via D3DCompile from the standalone D3D compiler DLL
+            dllFuncMap["d3dcompiler_47.dll"].push_back("D3DCompile");
         } else {
             // Software mode: GDI functions
             dllFuncMap["gdi32.dll"].push_back("CreateDIBSection");

@@ -113,3 +113,118 @@ func main() -> int
     return 0
 end
 ```
+# Bare-Metal режим (своя ОС без ОС)
+
+Zenith поддерживает bare-metal — компиляцию в сырой бинарный файл,
+который можно загрузить напрямую через bootloader (multiboot, Limine)
+или собственный бутсектор.
+
+## Включение
+
+```zenith
+app bare
+vide easy              # или vide hard
+
+func main() -> int
+    vga_clear()
+    vga_print("Hello from bare metal!")
+    halt()
+    return 0
+end
+```
+
+## Сборка
+
+```bash
+zenith kernel.z          # → kernel.bin (raw binary)
+zenith kernel.z -o os    # → os.bin
+zenith build             # → exe/<имя>.bin
+```
+
+Выход: **плоский бинарный файл** — только код и данные, без PE-заголовка.
+
+## Встроенные функции
+
+### VGA (текстовый режим 80x25)
+
+| Функция | Описание |
+|---------|----------|
+| `vga_clear()` | Залить экран пробелами, сбросить курсор |
+| `vga_print("text")` | Напечатать ASCII-строку (белые буквы на чёрном) |
+| `vga_putc(char, attr)` | Написать символ с атрибутом цвета |
+
+```zenith
+app bare
+vide easy
+
+func main() -> int
+    vga_clear()
+    vga_print("Welcome to my OS!")
+    vga_print("Line 2")
+    halt()
+    return 0
+end
+```
+
+### Системные
+
+| Функция | Описание |
+|---------|----------|
+| `halt()` | Бесконечный цикл с `hlt` |
+| `peek(addr)` | Прочитать 8 байт по адресу |
+| `poke(addr, val)` | Записать 8 байт по адресу |
+
+### Только vide hard
+
+| Функция | Описание |
+|---------|----------|
+| `cli()` / `sti()` | Запретить/разрешить прерывания |
+| `hlt()` | Остановить CPU |
+| `int(n)` | Программное прерывание |
+| `inb/inw/ind(port)` | Чтение из порта |
+| `outb/outw/outd(port,val)` | Запись в порт |
+| `lidt(ptr)` / `lgdt(ptr)` | Загрузить IDT/GDT |
+| `phys ptr<T>` | Физические адреса |
+| `asm { ... }` | Встроенный мини-ассемблер x86-64 |
+
+## Пример: bare hard с VGA
+
+```zenith
+app bare
+vide hard
+
+func main() -> int
+    var vga: phys ptr<int> = 0xB8000
+    *vga = 0x1F48          # 'H', белый на синем
+    *(vga + 1) = 0x1F69    # 'i'
+
+    asm {
+        cli
+        hlt
+    }
+    return 0
+end
+```
+
+## Пример: своя ОС с GDT
+
+```zenith
+app bare
+vide hard
+
+func main() -> int
+    vga_clear()
+    vga_print("Setting up GDT...")
+
+    # Загружаем GDT (таблица должна быть в памяти)
+    var gdt_ptr: int = alloc(10)
+    poke(gdt_ptr, 0x001F)     # limit
+    poke(gdt_ptr + 2, 0x1000)  # base (пример)
+
+    lgdt(gdt_ptr)
+
+    vga_print("Done!")
+    halt()
+    return 0
+end
+```

@@ -2118,6 +2118,12 @@ int Codegen::emitExpr(Expr* expr) {
             if (tryGUICall(call, guiResult)) return guiResult;
         }
 
+        // ============== DX11 Shader Built-in Functions ==============
+        if (prog.renderType == RenderType::DX11) {
+            int dxResult;
+            if (tryDX11Call(call, dxResult)) return dxResult;
+        }
+
 
         int savedRegs = regsUsed;
         int savedXmmRegs = xmmRegsUsed;

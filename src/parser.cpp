@@ -573,12 +573,15 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
             advance();
             auto call = std::make_unique<CallExpr>();
             call->name = typeName;
+            while (check(TokenKind::Newline)) advance();
             if (!check(TokenKind::RParen)) {
                 call->args.push_back(parseExpression());
                 while (match(TokenKind::Comma)) {
+                    while (check(TokenKind::Newline)) advance();
                     call->args.push_back(parseExpression());
                 }
             }
+            while (check(TokenKind::Newline)) advance();
             consume(TokenKind::RParen, "Expected ')'");
             expr = std::move(call);
         } else {
@@ -631,12 +634,15 @@ std::unique_ptr<Expr> Parser::parseCallOrIdent() {
         advance();
         auto call = std::make_unique<CallExpr>();
         call->name = name;
+        while (check(TokenKind::Newline)) advance();
         if (!check(TokenKind::RParen)) {
             call->args.push_back(parseExpression());
             while (match(TokenKind::Comma)) {
+                while (check(TokenKind::Newline)) advance();
                 call->args.push_back(parseExpression());
             }
         }
+        while (check(TokenKind::Newline)) advance();
         consume(TokenKind::RParen, "Expected ')'");
         return parseDotChain(std::move(call));
     }
@@ -656,12 +662,15 @@ std::unique_ptr<Expr> Parser::parseDotChain(std::unique_ptr<Expr> left) {
             auto call = std::make_unique<CallExpr>();
             call->name = memb->member;
             call->receiver = std::move(memb);
+            while (check(TokenKind::Newline)) advance();
             if (!check(TokenKind::RParen)) {
                 call->args.push_back(parseExpression());
                 while (match(TokenKind::Comma)) {
+                    while (check(TokenKind::Newline)) advance();
                     call->args.push_back(parseExpression());
                 }
             }
+            while (check(TokenKind::Newline)) advance();
             consume(TokenKind::RParen, "Expected ')'");
             left = std::move(call);
         } else {

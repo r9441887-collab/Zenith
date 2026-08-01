@@ -1,8 +1,8 @@
 # Язык Зенит — Краткий обзор
 
-**Zenith** — компилируемый язык программирования для игр, системного ПО,
-UEFI-загрузчиков и bare-metal операционных систем.
-Компилируется напрямую в x86_64 машинный код без внешних зависимостей.
+**Zenith** — компилируемый язык программирования для разработки игр,
+системного ПО и UEFI-загрузчиков.
+Компилируется напрямую в x86_64 машинный код и упаковывается в .exe / .efi без внешних зависимостей.
 
 ## Быстрый старт
 
@@ -17,65 +17,53 @@ end
 
 ## Типы приложений
 
-Каждый файл .z обязан начинаться с `app`:
+Каждый файл .z обязан начинаться с директивы `app`:
 
-| Директива | Выход | Описание |
-|-----------|-------|----------|
-| `app console` | .exe | Консольное приложение Windows |
-| `app gui` | .exe | GUI (окна, рисование, ввод) |
-| `app efi` | .efi / BOOTX64.EFI | UEFI-загрузчик |
-| `app bare` | .bin (raw binary) | Bare-metal ОС без ОС |
+| Директива | Описание |
+|-----------|----------|
+| `app console` | Консольное приложение (print, alloc, sleep) |
+| `app gui` | GUI-приложение (окна, рисование, ввод) |
+| `app efi` | UEFI-приложение (.efi, BOOTX64.EFI) |
 
-## Режимы сложности: `vide easy` / `vide hard`
-
-После `app` можно указать режим:
-
-| Режим | Что доступно |
-|-------|-------------|
-| `vide easy` | Только простые функции, без asm/phys |
-| `vide hard` (по умолчанию) | Полный контроль: asm, phys-указатели, прерывания |
+### Выбор рендера (только для GUI)
 
 ```zenith
-app bare
-vide easy            # простой синтаксис
-
-func main()
-    vga_clear()
-    vga_print("Hello!")
-    halt()
-end
+app gui
+type sr           # программный рендер (по умолчанию)
 ```
 
 ```zenith
-app bare
-vide hard            # полный контроль
-
-func main()
-    asm { cli }
-    var fb: phys ptr<int> = 0xB8000
-    *fb = 0x1F48
-    halt()
-end
+app gui
+type dx           # DirectX 11 аппаратный рендеринг
 ```
+
+### Особенности EFI-режима
+
+- Автоматическое имя выхода: `BOOTX64.EFI` (или имя проекта + `.efi`)
+- Доступ к физическим адресам памяти через `phys ptr<T>`
+- Встроенные функции прерываний: `cli()`, `sti()`, `int(n)`, `inb(port)`, `outb(port, val)` и др.
+- Ассемблерные вставки `asm { ... }` с человекочитаемыми мнемониками
+- Мини-ассемблер x86-64: `mov`, `xor`, `add`, `jmp`, `int`, `iretq`, `wrmsr`, и многие другие
 
 ## Структура файла
 
 ```zenith
-app console              # 1. Тип приложения
-vide easy                # 2. (опционально) режим сложности
+app console              # 1. Директива типа приложения
+type sr                  # 2. (опционально) тип рендера
 
-@import("some.dll")      # 3. Импорт DLL
+@import("some.dll")     # 3. Импорт DLL
 
-extern func f(a: int) -> int  # 4. Внешние функции
+extern func SomeFunc(a: int) -> int    # 4. Внешние функции
 
-struct Point              # 5. Структуры
+struct Point              # 5. Объявление структур
     var x: float
     var y: float
 end
 
 var globalVar: int = 0    # 6. Глобальные переменные
 
-func main() -> int        # 7. Точка входа
+func main() -> int        # 7. Точка входа — func main()
+    # ... тело ...
     return 0
 end
 ```
@@ -83,14 +71,14 @@ end
 ## Компиляция
 
 ```bash
-# Консоль / GUI
-zenith main.z -o game.exe
+# Обычная сборка
+zenith examples/main.z -o game.exe
 
-# EFI (автоматически → BOOTX64.EFI)
+# EFI-сборка (автоматически → BOOTX64.EFI)
 zenith boot.z
 
-# Bare-metal (автоматически → a.bin)
-zenith kernel.z
+# С указанием имени
+zenith boot.z -o myos.efi
 
 # Проектная сборка
 zenith build
@@ -98,15 +86,17 @@ zenith build
 
 ## Ключевые особенности
 
-- Ноль внешних зависимостей
+- Никаких внешних зависимостей (нет runtime, нет libc)
 - Прямая генерация x86_64 машинного кода
-- 4 типа выхода: .exe, .dll, .efi, .bin (raw)
-- Указатели: `ptr<T>`, `phys ptr<T>`, `&x`, `*p`, `*p = v`
-- Встроенные аллокаторы: bump, arena, pool, slot
-- Встроенный мини-ассемблер x86-64 (vide hard)
-- Прерывания и порты ввода-вывода
-- EFI System Table (efi_print, efi_exit)
-- Bare-metal VGA: vga_print, vga_clear, vga_putc
-- 2D графика: software (GDI) и DX11
-- Многопоточность через libs.dll
-- Мёртвый код удаляется оптимизатором
+- Windows PE формат (.exe / .dll) и UEFI (.efi)
+- Указатели: `ptr<T>`, `virt ptr<T>`, `phys ptr<T>` (физические адреса — EFI-only)
+- Операции с указателями: `&x` (взятие адреса), `*p` (разыменование), `*p = v` (запись)
+- Встроенные аллокаторы памяти (bump, arena, pool, slot)
+- 2D-графика через software rendering (GDI)
+- DirectX 11 для аппаратного рендеринга
+- Многопоточность через libs.dll (thread, mutex, async, pool)
+- Модульная DLL-система с `@import` и `--embed`
+- Оптимизатор (Dead Code Elimination)
+- Multi-file проекты через `zenith build`
+- Встроенный мини-ассемблер x86-64 (EFI only)
+- Прерывания, порты ввода-вывода, MSR (EFI only)
