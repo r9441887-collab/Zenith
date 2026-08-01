@@ -1037,5 +1037,196 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         return true;
     }
 
+
+    // ============== EFI Builtins ==============
+    // efi_image_handle() — returns EFI_HANDLE
+    if (call->name == "efi_image_handle" && call->args.empty()) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        emit8(0x48); emit8(0x8B); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA});
+        emit32(0);
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // efi_system_table() — returns EFI_SYSTEM_TABLE*
+    if (call->name == "efi_system_table" && call->args.empty()) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        emit8(0x48); emit8(0x8B); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 8});
+        emit32(0);
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // efi_exit(status) — returns status from EfiMain
+    if (call->name == "efi_exit" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int statusReg = emitExpr(call->args[0].get());
+        if (statusReg != 0) { emitMovReg(0, statusReg); freeReg(statusReg); }
+        else freeReg(0);
+        emit8(0xC9);  // leave
+        emit8(0xC3);  // ret
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // efi_print(text) — prints string via EFI SystemTable ConOut->OutputString
+    if (call->name == "efi_print" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int strReg = emitExpr(call->args[0].get());
+        if (strReg != 0) { emitMovReg(0, strReg); freeReg(strReg); }
+        else freeReg(0);
+
+        emit8(0x48); emit8(0x81); emit8(0xEC); emit32(0x220); // sub rsp, 0x220
+        emit8(0x48); emit8(0x89); emit8(0xC6); // mov rsi, rax
+        emit8(0x48); emit8(0x8D); emit8(0x7C); emit8(0x24); emit8(0x20); // lea rdi, [rsp + 0x20]
+        emit8(0x48); emit8(0xC7); emit8(0xC1); emit32(255); // mov rcx, 255
+
+        int loopLabel = newLabel();
+        int endLabel = newLabel();
+        emitLabel(loopLabel);
+        emit8(0x8A); emit8(0x06); // mov al, [rsi]
+        emit8(0x84); emit8(0xC0); // test al, al
+        emitJcc("e", endLabel);
+        emit8(0x66); emit8(0x89); emit8(0x07); // mov [rdi], ax
+        emit8(0x48); emit8(0xFF); emit8(0xC6); // inc rsi
+        emit8(0x48); emit8(0x83); emit8(0xC7); emit8(0x02); // add rdi, 2
+        emit8(0x48); emit8(0xFF); emit8(0xC9); // dec rcx
+        emitJcc("ne", loopLabel);
+
+        emitLabel(endLabel);
+        emit8(0x66); emit8(0xC7); emit8(0x07); emit16(0); // mov word ptr [rdi], 0
+
+        emit8(0x48); emit8(0x8B); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 8});
+        emit32(0); // rax = SystemTable
+
+        emit8(0x48); emit8(0x8B); emit8(0x48); emit8(0x40); // mov rcx, [rax + 0x40] (rcx = ConOut)
+        emit8(0x48); emit8(0x8D); emit8(0x54); emit8(0x24); emit8(0x20); // lea rdx, [rsp + 0x20]
+        emit8(0xFF); emit8(0x51); emit8(0x08); // call qword ptr [rcx + 8] (OutputString)
+
+        emit8(0x48); emit8(0x81); emit8(0xC4); emit32(0x220); // add rsp, 0x220
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // ============== Bare-Metal / VGA Builtins ==============
+    // vga_clear() — clears 80x25 VGA text screen
+    if (call->name == "vga_clear" && call->args.empty()) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        emit8(0x48); emit8(0xC7); emit8(0xC7); emit32(0xB8000); // mov rdi, 0xB8000
+        emit8(0x66); emit8(0xB8); emit16(0x0720); // mov ax, 0x0720
+        emit8(0x48); emit8(0xC7); emit8(0xC1); emit32(2000); // mov rcx, 2000
+        emit8(0xF3); emit8(0x66); emit8(0xAB); // rep stosw
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // vga_print(text) — prints ASCII string to VGA memory at 0xB8000
+    if (call->name == "vga_print" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int strReg = emitExpr(call->args[0].get());
+        if (strReg != 0) { emitMovReg(0, strReg); freeReg(strReg); }
+        else freeReg(0);
+        emit8(0x48); emit8(0x89); emit8(0xC6); // mov rsi, rax
+        emit8(0x48); emit8(0xC7); emit8(0xC7); emit32(0xB8000); // mov rdi, 0xB8000
+        int loopLbl = newLabel();
+        int endLbl = newLabel();
+        emitLabel(loopLbl);
+        emit8(0x8A); emit8(0x06); // mov al, [rsi]
+        emit8(0x84); emit8(0xC0); // test al, al
+        emitJcc("e", endLbl);
+        emit8(0x88); emit8(0x07); // mov [rdi], al
+        emit8(0xC6); emit8(0x47); emit8(0x01); emit8(0x07); // mov byte ptr [rdi+1], 0x07
+        emit8(0x48); emit8(0xFF); emit8(0xC6); // inc rsi
+        emit8(0x48); emit8(0x83); emit8(0xC7); emit8(0x02); // add rdi, 2
+        emitJmp(loopLbl);
+        emitLabel(endLbl);
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // vga_putc(char, attr)
+    if (call->name == "vga_putc" && call->args.size() == 2) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int cReg = emitExpr(call->args[0].get());
+        emit8(0x50); // push char
+        int attrReg = emitExpr(call->args[1].get());
+        emit8(0x50); // push attr
+        emit8(0x5B); // pop rbx (attr)
+        emit8(0x58); // pop rax (char)
+        emit8(0x48); emit8(0xC7); emit8(0xC7); emit32(0xB8000); // mov rdi, 0xB8000
+        emit8(0x88); emit8(0x07); // mov [rdi], al
+        emit8(0x88); emit8(0x5F); emit8(0x01); // mov [rdi+1], bl
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // halt() — cli; hlt loop
+    if (call->name == "halt" && call->args.empty()) {
+        emit8(0xFA); // cli
+        emit8(0xF4); // hlt
+        int loopLbl = newLabel();
+        emitLabel(loopLbl);
+        emit8(0xEB); emit8(0xFE); // jmp $
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // outb(port, val)
+    if (call->name == "outb" && call->args.size() == 2) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int portReg = emitExpr(call->args[0].get());
+        emit8(0x50); // push port
+        int valReg = emitExpr(call->args[1].get());
+        emit8(0x50); // push val
+        emit8(0x58); // pop rax (val)
+        emit8(0x5A); // pop rdx (port)
+        emit8(0xEE); // out dx, al
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // inb(port)
+    if (call->name == "inb" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int portReg = emitExpr(call->args[0].get());
+        if (portReg != 0) { emitMovReg(2, portReg); freeReg(portReg); }
+        else freeReg(0);
+        emit8(0xEC); // in al, dx
+        emit8(0x0F); emit8(0xB6); emit8(0xC0); // movzx eax, al
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
     return false;
 }

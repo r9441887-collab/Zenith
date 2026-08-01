@@ -2124,6 +2124,11 @@ int Codegen::emitExpr(Expr* expr) {
             if (tryDX11Call(call, dxResult)) return dxResult;
         }
 
+        // ============== EFI / Bare-metal Built-in Functions ==============
+        if (prog.appType == AppType::EFI || prog.appType == AppType::Bare) {
+            int efiResult;
+            if (tryEFICall(call, efiResult)) return efiResult;
+        }
 
         int savedRegs = regsUsed;
         int savedXmmRegs = xmmRegsUsed;
