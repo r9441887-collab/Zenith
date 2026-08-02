@@ -1124,65 +1124,8 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
     }
 
     // ============== Bare-Metal / VGA Builtins ==============
-    // vga_clear() — clears 80x25 VGA text screen
-    if (call->name == "vga_clear" && call->args.empty()) {
-        int saved = regsUsed;
-        spillRegs();
-        regsUsed = 0;
-        emit8(0x48); emit8(0xC7); emit8(0xC7); emit32(0xB8000); // mov rdi, 0xB8000
-        emit8(0x66); emit8(0xB8); emit16(0x0720); // mov ax, 0x0720
-        emit8(0x48); emit8(0xC7); emit8(0xC1); emit32(2000); // mov rcx, 2000
-        emit8(0xF3); emit8(0x66); emit8(0xAB); // rep stosw
-        regsUsed = 1;
-        resultReg = 0;
-        return true;
-    }
-
-    // vga_print(text) — prints ASCII string to VGA memory at 0xB8000
-    if (call->name == "vga_print" && call->args.size() == 1) {
-        int saved = regsUsed;
-        spillRegs();
-        regsUsed = 0;
-        int strReg = emitExpr(call->args[0].get());
-        if (strReg != 0) { emitMovReg(0, strReg); freeReg(strReg); }
-        else freeReg(0);
-        emit8(0x48); emit8(0x89); emit8(0xC6); // mov rsi, rax
-        emit8(0x48); emit8(0xC7); emit8(0xC7); emit32(0xB8000); // mov rdi, 0xB8000
-        int loopLbl = newLabel();
-        int endLbl = newLabel();
-        emitLabel(loopLbl);
-        emit8(0x8A); emit8(0x06); // mov al, [rsi]
-        emit8(0x84); emit8(0xC0); // test al, al
-        emitJcc("e", endLbl);
-        emit8(0x88); emit8(0x07); // mov [rdi], al
-        emit8(0xC6); emit8(0x47); emit8(0x01); emit8(0x07); // mov byte ptr [rdi+1], 0x07
-        emit8(0x48); emit8(0xFF); emit8(0xC6); // inc rsi
-        emit8(0x48); emit8(0x83); emit8(0xC7); emit8(0x02); // add rdi, 2
-        emitJmp(loopLbl);
-        emitLabel(endLbl);
-        regsUsed = 1;
-        resultReg = 0;
-        return true;
-    }
-
-    // vga_putc(char, attr)
-    if (call->name == "vga_putc" && call->args.size() == 2) {
-        int saved = regsUsed;
-        spillRegs();
-        regsUsed = 0;
-        int cReg = emitExpr(call->args[0].get());
-        emit8(0x50); // push char
-        int attrReg = emitExpr(call->args[1].get());
-        emit8(0x50); // push attr
-        emit8(0x5B); // pop rbx (attr)
-        emit8(0x58); // pop rax (char)
-        emit8(0x48); emit8(0xC7); emit8(0xC7); emit32(0xB8000); // mov rdi, 0xB8000
-        emit8(0x88); emit8(0x07); // mov [rdi], al
-        emit8(0x88); emit8(0x5F); emit8(0x01); // mov [rdi+1], bl
-        regsUsed = 1;
-        resultReg = 0;
-        return true;
-    }
+    // Note: vga_clear/vga_putc/vga_print are handled by the cursor-aware
+    // implementations in tryEFICall (EFI/Bare) and tryBIOSCall (BIOS).
 
     // halt() — cli; hlt loop
     if (call->name == "halt" && call->args.empty()) {

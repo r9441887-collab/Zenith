@@ -33,9 +33,11 @@ Type Parser::parseType() {
         if (appType != AppType::EFI && appType != AppType::Bare)
             throw std::runtime_error("phys requires EFI/bare");
     }
-    // ptr<T> handling
+    // ptr<T> handling (accepts both `ptr T` and `ptr<T>`)
     if (check(TokenKind::Ptr)) {
         advance(); Type inner;
+        bool angled = false;
+        if (check(TokenKind::Lt)) { advance(); angled = true; }
         if (check(TokenKind::TypeInt))    { advance(); inner = {TypeKind::Int}; }
         else if (check(TokenKind::TypeFloat))  { advance(); inner = {TypeKind::Float}; }
         else if (check(TokenKind::TypeBool))   { advance(); inner = {TypeKind::Bool}; }
@@ -43,6 +45,7 @@ Type Parser::parseType() {
         else if (check(TokenKind::TypeVoid))   { advance(); inner = {TypeKind::Void}; }
         else if (check(TokenKind::Ident)) { inner.kind=TypeKind::Struct; inner.structName=advance().text; }
         else throw std::runtime_error("Expected type after ptr");
+        if (angled) consume(TokenKind::Gt, "Expected '>' after ptr<type>");
         inner.isPtr=true; inner.addrSpace=addrSpace; return inner;
     }
     switch (peek().kind) {
@@ -281,14 +284,18 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         while (!check(TokenKind::Eof) && !check(TokenKind::RBrace)) {
             if (check(TokenKind::Newline)) { advance(); continue; }
             AsmInstr instr;
-            instr.mnemonic = consume(TokenKind::Ident, "Expected mnemonic").text;
+            if (check(TokenKind::Ident) || check(TokenKind::TypeInt)) {
+                instr.mnemonic = advance().text;
+            } else {
+                consume(TokenKind::Ident, "Expected mnemonic");
+            }
             for (auto& c : instr.mnemonic) c = (char)tolower((unsigned char)c);
             if (!check(TokenKind::Newline) && !check(TokenKind::RBrace)) {
-                if (check(TokenKind::Ident) || check(TokenKind::Number) || check(TokenKind::Minus))
-                    instr.op1 = advance().text;
-                if (check(TokenKind::Comma)) { advance();
-                    if (check(TokenKind::Ident) || check(TokenKind::Number) || check(TokenKind::Minus))
-                        instr.op2 = advance().text; }
+                instr.op1 = readAsmOperand();
+                if (check(TokenKind::Comma)) {
+                    advance();
+                    instr.op2 = readAsmOperand();
+                }
             }
             stmt->instrs.push_back(std::move(instr));
             if (check(TokenKind::Newline)) advance();
@@ -366,6 +373,35 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     stmt->expr = parseExpression();
     if (check(TokenKind::Newline)) advance();
     return stmt;
+}
+
+std::string Parser::readAsmOperand() {
+    std::string result;
+    if (check(TokenKind::LBrack)) {
+        std::vector<std::string> parts;
+        parts.push_back(advance().text);
+        int depth = 1;
+        while (depth > 0) {
+            if (check(TokenKind::Eof) || check(TokenKind::Newline)) break;
+            if (check(TokenKind::RBrack)) { parts.push_back(advance().text); depth--; continue; }
+            if (check(TokenKind::LBrack)) depth++;
+            parts.push_back(advance().text);
+        }
+        for (size_t i = 0; i < parts.size(); i++) {
+            if (i) result += ' ';
+            result += parts[i];
+        }
+        return result;
+    }
+    if (check(TokenKind::Minus)) {
+        result = advance().text;
+        if (check(TokenKind::Number) || check(TokenKind::Ident)) result += advance().text;
+        return result;
+    }
+    if (check(TokenKind::Ident) || check(TokenKind::Number)) {
+        return advance().text;
+    }
+    return "";
 }
 
 std::unique_ptr<Stmt> Parser::parseIf() {

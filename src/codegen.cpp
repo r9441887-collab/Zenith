@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -2124,10 +2125,26 @@ int Codegen::emitExpr(Expr* expr) {
             if (tryDX11Call(call, dxResult)) return dxResult;
         }
 
+        // ============== Shared builtins (EFI/Bare): efi_print, efi_exit, halt, inb/outb ==============
+        // Tried BEFORE tryEFICall so the argument-evaluating implementations win over the
+        // duplicate (and previously unreachable) ones in the EFI-specific handler.
+        // vga_clear/vga_putc/vga_print are handled by the cursor-aware versions in
+        // tryEFICall (EFI/Bare) and tryBIOSCall (BIOS).
+        if (prog.appType == AppType::EFI || prog.appType == AppType::Bare) {
+            int builtinResult;
+            if (tryBuiltinCall(call, builtinResult)) return builtinResult;
+        }
+
         // ============== EFI / Bare-metal Built-in Functions ==============
         if (prog.appType == AppType::EFI || prog.appType == AppType::Bare) {
             int efiResult;
             if (tryEFICall(call, efiResult)) return efiResult;
+        }
+
+        // ============== BIOS Built-in Functions ==============
+        if (prog.appType == AppType::BIOS) {
+            int biosResult;
+            if (tryBIOSCall(call, biosResult)) return biosResult;
         }
 
         int savedRegs = regsUsed;
@@ -2265,6 +2282,13 @@ int Codegen::emitExpr(Expr* expr) {
         // All volatile regs clobbered by call; only RAX holds the return value
         regsUsed = 1;
         xmmRegsUsed = 0;
+        return 0;
+    }
+    if (auto deref = dynamic_cast<DerefExpr*>(expr)) {
+        int r = emitExpr(deref->ptr.get());
+        if (r != 0) { emitMovReg(0, r); freeReg(r); } else freeReg(0);
+        emit8(0x48); emit8(0x8B); emit8(0x00); // mov rax, [rax]
+        regsUsed = 1;
         return 0;
     }
 
@@ -2463,7 +2487,290 @@ void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
 
         emitJmp(loopLabel);
         emitLabel(endLabel);
+    } else if (auto ptrAssign = dynamic_cast<PtrAssignStmt*>(stmt)) {
+        spillRegs();
+        regsUsed = 0;
+        int v = emitExpr(ptrAssign->value.get());
+        if (v != 0) { emitMovReg(0, v); freeReg(v); } else freeReg(0);
+        emit8(0x50); // push rax (value)
+        int p = emitExpr(ptrAssign->ptr.get());
+        if (p != 0) { emitMovReg(0, p); freeReg(p); } else freeReg(0);
+        emit8(0x5A); // pop rdx
+        emit8(0x48); emit8(0x89); emit8(0x10); // mov [rax], rdx
+        regsUsed = 0;
+    } else if (auto asmStmt = dynamic_cast<AsmStmt*>(stmt)) {
+        for (auto& instr : asmStmt->instrs) emitAsmInstr(instr);
     }
+}
+
+int Codegen::asmRegIndex(const std::string& name) const {
+    std::string n = name;
+    for (auto& c : n) c = (char)tolower((unsigned char)c);
+    static const char* names64[16] = {"rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15"};
+    static const char* names32[16] = {"eax","ecx","edx","ebx","esp","ebp","esi","edi","r8d","r9d","r10d","r11d","r12d","r13d","r14d","r15d"};
+    static const char* names16[16] = {"ax","cx","dx","bx","sp","bp","si","di","r8w","r9w","r10w","r11w","r12w","r13w","r14w","r15w"};
+    static const char* names8[16] = {"al","cl","dl","bl","spl","bpl","sil","dil","r8b","r9b","r10b","r11b","r12b","r13b","r14b","r15b"};
+    for (int i = 0; i < 16; i++) { if (n == names64[i]) return i; }
+    for (int i = 0; i < 16; i++) { if (n == names32[i]) return i; }
+    for (int i = 0; i < 16; i++) { if (n == names16[i]) return i; }
+    for (int i = 0; i < 16; i++) { if (n == names8[i]) return i; }
+    return -1;
+}
+
+void Codegen::emitAsmInstr(const AsmInstr& instr) {
+    struct AsmOp { int type = 0; int reg = 0; int base = 0; int64_t disp = 0; };
+    auto trimStr = [](std::string& s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+        while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+    };
+    auto parseNum = [&](const std::string& s) -> int64_t {
+        std::string t = s;
+        trimStr(t);
+        bool neg = false;
+        if (!t.empty() && t[0] == '-') { neg = true; t.erase(t.begin()); }
+        int64_t val = 0;
+        try {
+            if (t.size() >= 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X'))
+                val = std::stoll(t.substr(2), nullptr, 16);
+            else
+                val = std::stoll(t, nullptr, 10);
+        } catch (...) { val = 0; }
+        return neg ? -val : val;
+    };
+    auto parseOp = [&](const std::string& raw) -> AsmOp {
+        std::string s = raw;
+        trimStr(s);
+        AsmOp op;
+        if (s.empty()) return op;
+        if (s[0] == '[') {
+            op.type = 3;
+            std::string inner = s;
+            if (inner.size() >= 2 && inner.back() == ']') inner = inner.substr(1, inner.size() - 2);
+            size_t plus = inner.find('+');
+            size_t minus = inner.find('-');
+            std::string baseStr, dispStr;
+            if (plus != std::string::npos) { baseStr = inner.substr(0, plus); dispStr = inner.substr(plus + 1); }
+            else if (minus != std::string::npos) { baseStr = inner.substr(0, minus); dispStr = inner.substr(minus); }
+            else { baseStr = inner; }
+            trimStr(baseStr); trimStr(dispStr);
+            op.base = asmRegIndex(baseStr);
+            if (op.base < 0) op.base = 0;
+            if (!dispStr.empty()) op.disp = parseNum(dispStr);
+            return op;
+        }
+        int ri = asmRegIndex(s);
+        if (ri >= 0) { op.type = 1; op.reg = ri; return op; }
+        if (s.size() >= 3 && (s[0] == 'c' || s[0] == 'C') && (s[1] == 'r' || s[1] == 'R')) {
+            try { op.type = 4; op.reg = std::stoi(s.substr(2)); return op; } catch (...) {}
+        }
+        op.type = 2;
+        op.disp = parseNum(s);
+        return op;
+    };
+
+    AsmOp o1 = parseOp(instr.op1);
+    AsmOp o2 = parseOp(instr.op2);
+    std::string m = instr.mnemonic;
+    for (auto& c : m) c = (char)tolower((unsigned char)c);
+
+    auto rex = [&](bool w, bool r, bool x, bool b) {
+        emit8((uint8_t)(0x40 | (w ? 8 : 0) | (r ? 4 : 0) | (x ? 2 : 0) | (b ? 1 : 0)));
+    };
+    auto modrm = [&](int mod, int reg, int rm) {
+        emit8((uint8_t)(((mod & 3) << 6) | ((reg & 7) << 3) | (rm & 7)));
+    };
+    auto unsupported = [&](const char* what) {
+        fprintf(stderr, "Warning: asm: unsupported instruction '%s', skipped\n", what);
+    };
+
+    if (m == "mov") {
+        if (o1.type == 1 && o2.type == 1) {
+            rex(true, o2.reg >= 8, false, o1.reg >= 8);
+            emit8(0x89); modrm(3, o2.reg, o1.reg);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 2) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8((uint8_t)(0xB8 + (o1.reg & 7)));
+            emit64((uint64_t)o2.disp);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 3) {
+            rex(true, o1.reg >= 8, false, o2.base >= 8);
+            emit8(0x8B); modrm(2, o1.reg, o2.base);
+            emit32((uint32_t)o2.disp);
+            return;
+        }
+        if (o1.type == 3 && o2.type == 1) {
+            rex(true, o2.reg >= 8, false, o1.base >= 8);
+            emit8(0x89); modrm(2, o2.reg, o1.base);
+            emit32((uint32_t)o1.disp);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 4) {
+            rex(true, o2.reg >= 8, false, o1.reg >= 8);
+            emit8(0x0F); emit8(0x20); modrm(3, o2.reg, o1.reg);
+            return;
+        }
+        if (o1.type == 4 && o2.type == 1) {
+            rex(true, o1.reg >= 8, false, o2.reg >= 8);
+            emit8(0x0F); emit8(0x22); modrm(3, o1.reg, o2.reg);
+            return;
+        }
+        unsupported("mov");
+        return;
+    }
+
+    int arithOp = -1;
+    if (m == "add") arithOp = 0;
+    else if (m == "or") arithOp = 1;
+    else if (m == "and") arithOp = 4;
+    else if (m == "sub") arithOp = 5;
+    else if (m == "xor") arithOp = 6;
+    if (arithOp >= 0) {
+        static const uint8_t arithOpcodes[8] = {0x01, 0x09, 0x00, 0x00, 0x21, 0x29, 0x31, 0x00};
+        if (o1.type == 1 && o2.type == 1) {
+            rex(true, o2.reg >= 8, false, o1.reg >= 8);
+            emit8(arithOpcodes[arithOp]); modrm(3, o2.reg, o1.reg);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 2) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(0x81); modrm(3, arithOp, o1.reg);
+            emit32((uint32_t)o2.disp);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    if (m == "test") {
+        if (o1.type == 1 && o2.type == 1) {
+            rex(true, o2.reg >= 8, false, o1.reg >= 8);
+            emit8(0x85); modrm(3, o2.reg, o1.reg);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 2) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(0xF7); modrm(3, 0, o1.reg);
+            emit32((uint32_t)o2.disp);
+            return;
+        }
+        unsupported("test");
+        return;
+    }
+
+    if (m == "not" || m == "neg" || m == "inc" || m == "dec") {
+        bool group3 = (m == "not" || m == "neg");
+        int d = (m == "not") ? 2 : (m == "neg") ? 3 : (m == "inc") ? 0 : 1;
+        if (o1.type == 1) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(group3 ? 0xF7 : 0xFF); modrm(3, d, o1.reg);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    if (m == "shl" || m == "shr") {
+        int d = (m == "shl") ? 4 : 5;
+        if (o1.type == 1 && o2.type == 1 && o2.reg == 1) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(0xD3); modrm(3, d, o1.reg);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 2) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(0xC1); modrm(3, d, o1.reg);
+            emit8((uint8_t)o2.disp);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    if (m == "push" || m == "pop") {
+        if (o1.type == 1) {
+            if (o1.reg >= 8) emit8(0x41);
+            emit8((uint8_t)((m == "push" ? 0x50 : 0x58) + (o1.reg & 7)));
+            return;
+        }
+        if (m == "push" && o1.type == 2) {
+            emit8(0x68);
+            emit32((uint32_t)o1.disp);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    if (m == "jmp") {
+        int64_t rel = o1.disp - (int64_t)(code.size() + 5);
+        emit8(0xE9);
+        emit32((uint32_t)rel);
+        return;
+    }
+    static const struct { const char* name; int cc; } jccTable[] = {
+        {"je",0x84},{"jz",0x84},{"jne",0x85},{"jnz",0x85},{"jb",0x82},{"jbe",0x86},{"ja",0x87},{"jae",0x83},
+        {"jl",0x8C},{"jle",0x8E},{"jg",0x8F},{"jge",0x8D},{"js",0x88},{"jns",0x89}
+    };
+    for (auto& j : jccTable) {
+        if (m == j.name) {
+            int64_t rel = o1.disp - (int64_t)(code.size() + 6);
+            emit8(0x0F);
+            emit8((uint8_t)(0x80 | j.cc));
+            emit32((uint32_t)rel);
+            return;
+        }
+    }
+
+    if (m == "cli") { emit8(0xFA); return; }
+    if (m == "sti") { emit8(0xFB); return; }
+    if (m == "hlt") { emit8(0xF4); return; }
+    if (m == "nop") { emit8(0x90); return; }
+    if (m == "ret") { emit8(0xC3); return; }
+    if (m == "leave") { emit8(0xC9); return; }
+    if (m == "iret" || m == "iretq") { emit8(0xCF); return; }
+    if (m == "syscall") { emit8(0x0F); emit8(0x05); return; }
+    if (m == "cpuid") { emit8(0x0F); emit8(0xA2); return; }
+    if (m == "wrmsr") { emit8(0x0F); emit8(0x30); return; }
+    if (m == "rdmsr") { emit8(0x0F); emit8(0x32); return; }
+    if (m == "cqo" || m == "cqd") { emit8(0x48); emit8(0x99); return; }
+
+    if (m == "int") {
+        if (o1.type == 2) { emit8(0xCD); emit8((uint8_t)o1.disp); return; }
+        unsupported("int");
+        return;
+    }
+    if (m == "in") {
+        if (o1.type == 1 && o1.reg == 0 && o2.type == 2) {
+            emit8(0x48); emit8(0xE5); emit8((uint8_t)o2.disp);
+            return;
+        }
+        unsupported("in");
+        return;
+    }
+    if (m == "out") {
+        if (o1.type == 2 && o2.type == 1 && o2.reg == 0) {
+            emit8(0x48); emit8(0xE7); emit8((uint8_t)o1.disp);
+            return;
+        }
+        unsupported("out");
+        return;
+    }
+    if (m == "lgdt" || m == "lidt") {
+        int d = (m == "lgdt") ? 2 : 3;
+        if (o1.type == 3) {
+            rex(false, false, false, o1.base >= 8);
+            emit8(0x0F); emit8(0x01); modrm(2, d, o1.base);
+            emit32((uint32_t)o1.disp);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    unsupported(m.c_str());
 }
 
 void Codegen::computeStructLayouts() {
@@ -2628,6 +2935,15 @@ void Codegen::emitEntryPoint() {
         emit8(0x48); emit8(0x89); emit8(0xE5);  // mov rbp, rsp
         emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x20);  // sub rsp, 0x20 (shadow space)
 
+        // Store ImageHandle -> win32Globals, SystemTable -> win32Globals+8
+        // so the efi_* builtins (efi_print, efi_system_table, ...) can find them.
+        emit8(0x48); emit8(0x89); emit8(0x0D);  // mov [rip+disp], rcx
+        heapFixups.push_back({code.size(), win32GlobalsRVA});
+        emit32(0);
+        emit8(0x48); emit8(0x89); emit8(0x15);  // mov [rip+disp], rdx
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 8});
+        emit32(0);
+
         bool hasMain = funcOffsets.count("main") > 0;
         if (hasMain) {
             emit8(0xE8);
@@ -2737,9 +3053,10 @@ void Codegen::generateWide(const std::wstring& outputPath) {
     collectStrings();
     computeSectionRVAs();
 
-    if (prog.appType != AppType::EFI && prog.appType != AppType::Bare) {
-        buildImportData();
-    }
+    // buildImportData builds .rdata/.data layouts (string pool, win32 globals, heap state).
+    // It is required for ALL app types — EFI and Bare also reference the string pool and
+    // win32 globals (efi_print/vga_print), which previously stayed at RVA 0 (garbage).
+    buildImportData();
 
     if (prog.appType == AppType::GUI) {
         emitWndProc();

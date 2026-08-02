@@ -63,63 +63,134 @@ bool Codegen::tryEFICall(CallExpr* call, int& resultReg) {
 
     // ======================== inb(port) ========================
     if (call->name == "inb" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int portReg = emitExpr(call->args[0].get());
+        if (portReg != 2) { emitMovReg(2, portReg); freeReg(portReg); }
+        else freeReg(2);
         emit8(0xEC); // in al, dx
         emit8(0x48); emit8(0x0F); emit8(0xB6); emit8(0xC0); // movzx rax, al
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // ======================== inw(port) ========================
     if (call->name == "inw" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int portReg = emitExpr(call->args[0].get());
+        if (portReg != 2) { emitMovReg(2, portReg); freeReg(portReg); }
+        else freeReg(2);
         emit8(0x66); emit8(0xED); // in ax, dx
         emit8(0x0F); emit8(0xB7); emit8(0xC0); // movzx eax, ax
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // ======================== ind(port) ========================
     if (call->name == "ind" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int portReg = emitExpr(call->args[0].get());
+        if (portReg != 2) { emitMovReg(2, portReg); freeReg(portReg); }
+        else freeReg(2);
         emit8(0xED); // in eax, dx
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // ======================== outb(port, val) ========================
     if (call->name == "outb" && call->args.size() == 2) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int valReg = emitExpr(call->args[1].get());
+        if (valReg != 0) { emitMovReg(0, valReg); freeReg(valReg); }
+        else freeReg(0);
+        emit8(0x50);  // push rax (val)
+        int portReg = emitExpr(call->args[0].get());
+        if (portReg != 2) { emitMovReg(2, portReg); freeReg(portReg); }
+        else freeReg(2);
+        emit8(0x58);  // pop rax
         emit8(0xEE); // out dx, al
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // ======================== outw(port, val) ========================
     if (call->name == "outw" && call->args.size() == 2) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int valReg = emitExpr(call->args[1].get());
+        if (valReg != 0) { emitMovReg(0, valReg); freeReg(valReg); }
+        else freeReg(0);
+        emit8(0x50);  // push rax (val)
+        int portReg = emitExpr(call->args[0].get());
+        if (portReg != 2) { emitMovReg(2, portReg); freeReg(portReg); }
+        else freeReg(2);
+        emit8(0x58);  // pop rax
         emit8(0x66); emit8(0xEF); // out dx, ax
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // ======================== outd(port, val) ========================
     if (call->name == "outd" && call->args.size() == 2) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int valReg = emitExpr(call->args[1].get());
+        if (valReg != 0) { emitMovReg(0, valReg); freeReg(valReg); }
+        else freeReg(0);
+        emit8(0x50);  // push rax (val)
+        int portReg = emitExpr(call->args[0].get());
+        if (portReg != 2) { emitMovReg(2, portReg); freeReg(portReg); }
+        else freeReg(2);
+        emit8(0x58);  // pop rax
         emit8(0xEF); // out dx, eax
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // ======================== lidt(ptr) ========================
     if (call->name == "lidt" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int ptrReg = emitExpr(call->args[0].get());
+        if (ptrReg != 0) { emitMovReg(0, ptrReg); freeReg(ptrReg); }
+        else freeReg(0);
         emit8(0x0F); emit8(0x01); emit8(0x18); // lidt [rax]
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // ======================== lgdt(ptr) ========================
     if (call->name == "lgdt" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int ptrReg = emitExpr(call->args[0].get());
+        if (ptrReg != 0) { emitMovReg(0, ptrReg); freeReg(ptrReg); }
+        else freeReg(0);
         emit8(0x0F); emit8(0x01); emit8(0x10); // lgdt [rax]
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
@@ -153,20 +224,23 @@ bool Codegen::tryEFICall(CallExpr* call, int& resultReg) {
 
     // vga_putc(char, attr) — write char at cursor
     if (call->name == "vga_putc" && call->args.size() == 2) {
-        // AH = attr, AL = char (or use RDI, RSI)
-        // rdi = char, rsi = attr
-        emit8(0x89); emit8(0xF0); // mov eax, edi (char -> AL)
-        emit8(0x40); emit8(0x8A); emit8(0xF2); // mov sil, dl (attr -> AH high)
-        emit8(0x88); emit8(0xC4); // mov ah, al (AH = char, we'll fix this)
-        // Actually: AL=char, AH=attr
-        emit8(0x89); emit8(0xF0); // mov eax, edi
-        emit8(0xC1); emit8(0xE0); emit8(0x08); // shl eax, 8
-        emit8(0x40); emit8(0x8A); emit8(0xF2); // mov sil, dl
-        emit8(0x88); emit8(0xE0); // mov al, ah
-        // Now: AL=char, AH=attr
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int charReg = emitExpr(call->args[0].get());
+        if (charReg != 0) { emitMovReg(0, charReg); freeReg(charReg); }
+        else freeReg(0);
+        emit8(0x50);  // push rax (char)
+        int attrReg = emitExpr(call->args[1].get());
+        if (attrReg != 0) { emitMovReg(0, attrReg); freeReg(attrReg); }
+        else freeReg(0);
+        emit8(0x50);  // push rax (attr)
+        emit8(0x5B);  // pop rbx (attr)
+        emit8(0x58);  // pop rax (char)
+        emit8(0x88); emit8(0xE3); // mov ah, bl -> AL=char, AH=attr
         // rdi = 0xB8000
         emit8(0x48); emit8(0xBF);
-        emit8(0x00); emit8(0x80); emit8(0x0B); 
+        emit8(0x00); emit8(0x80); emit8(0x0B);
         emit8(0x00); emit8(0x00); emit8(0x00); emit8(0x00);
         // rcx = cursor position at 0x7E00
         emit8(0x48); emit8(0x8B); emit8(0x0C); emit8(0x25);
@@ -180,13 +254,20 @@ bool Codegen::tryEFICall(CallExpr* call, int& resultReg) {
         emit8(0x48); emit8(0xFF); emit8(0x04); emit8(0x25);
         emit8(0x00); emit8(0x7E); emit8(0x00); emit8(0x00);
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // vga_print(ptr) — print null-terminated string
     if (call->name == "vga_print" && call->args.size() == 1) {
-        // rsi = string pointer
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int ptrReg = emitExpr(call->args[0].get());
+        if (ptrReg != 0) { emitMovReg(0, ptrReg); freeReg(ptrReg); }
+        else freeReg(0);
+        emit8(0x48); emit8(0x89); emit8(0xC6); // mov rsi, rax (string pointer)
         // rdi = 0xB8000 + cursor*2
         emit8(0x48); emit8(0xBF);
         emit8(0x00); emit8(0x80); emit8(0x0B); 
@@ -227,6 +308,7 @@ bool Codegen::tryEFICall(CallExpr* call, int& resultReg) {
         emit8(0x00); emit8(0x00); emit8(0x00); emit8(0x00);
         
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
@@ -253,161 +335,173 @@ bool Codegen::tryEFICall(CallExpr* call, int& resultReg) {
         return true;
     }
 
-    // gop_clear(color) — clear screen with color (0x00RRGGBB)
+    // gop_clear(color) — fill the whole screen with color (0x00RRGGBB)
     if (call->name == "gop_clear" && call->args.size() == 1) {
-        // eax = color (will be 0x00RRGGBB)
-        emit8(0x89); emit8(0xC7); // mov edi, eax (color)
-        // rax = framebuffer address
-        emit8(0x48); emit8(0x8B); emit8(0x04); emit8(0x25);
-        emit8(0x00); emit8(0x80); emit8(0x00); emit8(0x00);
-        // rcx = width
-        emit8(0x48); emit8(0x8B); emit8(0x0C); emit8(0x25);
-        emit8(0x0C); emit8(0x80); emit8(0x00); emit8(0x00);
-        // rcx *= height
-        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8(0x0C); emit8(0x25);
-        emit8(0x10); emit8(0x80); emit8(0x00); emit8(0x00);
-        // rep stosd
-        emit8(0xF3); emit8(0xAB);
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int colorReg = emitExpr(call->args[0].get());
+        if (colorReg != 0) { emitMovReg(0, colorReg); freeReg(colorReg); }
+        else freeReg(0);
+        // rax = color; rdi = framebuffer; ecx = width*height; rep stosd
+        emit8(0x48); emit8(0x8B); emit8(0x3C); emit8(0x25);
+        emit8(0x00); emit8(0x80); emit8(0x00); emit8(0x00);   // mov rdi, [0x8000]
+        emit8(0x8B); emit8(0x0C); emit8(0x25);
+        emit8(0x0C); emit8(0x80); emit8(0x00); emit8(0x00);   // mov ecx, [0x800C] (width)
+        emit8(0x0F); emit8(0xAF); emit8(0x0C); emit8(0x25);
+        emit8(0x10); emit8(0x80); emit8(0x00); emit8(0x00);   // imul ecx, [0x8010] (height)
+        emit8(0xF3); emit8(0xAB);                             // rep stosd
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
-    // gop_pixel(x, y, color) — draw pixel
+    // gop_pixel(x, y, color) — draw a single pixel
     if (call->name == "gop_pixel" && call->args.size() == 3) {
-        // rdi=x, rsi=y, edx=color
-        // Calculate: addr = framebuffer + y * pitch + x * 4
-        // Save color to stack
-        emit8(0x50); // push rax (color in eax/edx)
-        // rax = framebuffer
-        emit8(0x48); emit8(0x8B); emit8(0x04); emit8(0x25);
-        emit8(0x00); emit8(0x80); emit8(0x00); emit8(0x00);
-        // rbx = framebuffer (save)
-        emit8(0x48); emit8(0x89); emit8(0xC3);
-        // rcx = pitch
-        emit8(0x48); emit8(0x8B); emit8(0x0C); emit8(0x25);
-        emit8(0x08); emit8(0x80); emit8(0x00); emit8(0x00);
-        // rcx *= y
-        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8(0xDE); // imul rcx, rsi
-        // rax += rcx
-        emit8(0x48); emit8(0x01); emit8(0xC8);
-        // rax += x * 4 (use lea)
-        emit8(0x48); emit8(0x8D); emit8(0x04); emit8(0x87); // lea rax, [rdi*4 + rax]
-        // Restore color and write
-        emit8(0x58); // pop rax
-        emit8(0x89); emit8(0x00); // mov [rax], eax
-        emitMovRegImm(1, 0);
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int xReg = emitExpr(call->args[0].get());
+        if (xReg != 0) { emitMovReg(0, xReg); freeReg(xReg); }
+        else freeReg(0);
+        emit8(0x50);  // push rax (x)
+        int yReg = emitExpr(call->args[1].get());
+        if (yReg != 0) { emitMovReg(0, yReg); freeReg(yReg); }
+        else freeReg(0);
+        emit8(0x50);  // push rax (y)
+        int cReg = emitExpr(call->args[2].get());
+        if (cReg != 0) { emitMovReg(0, cReg); freeReg(cReg); }
+        else freeReg(0);
+        // rax = color; stack: [rsp]=y, [rsp+8]=x
+        emit8(0x41); emit8(0x58);  // pop r8 (y)
+        emit8(0x41); emit8(0x59);  // pop r9 (x)
+        // rdi = framebuffer + y*pitch + x*4
+        emit8(0x48); emit8(0x8B); emit8(0x3C); emit8(0x25);
+        emit8(0x00); emit8(0x80); emit8(0x00); emit8(0x00);   // mov rdi, [0x8000]
+        emit8(0x48); emit8(0x8B); emit8(0x34); emit8(0x25);
+        emit8(0x08); emit8(0x80); emit8(0x00); emit8(0x00);   // mov rsi, [0x8008] (pitch)
+        emit8(0x49); emit8(0x0F); emit8(0xAF); emit8(0xF0);   // imul rsi, r8 (pitch*y)
+        emit8(0x48); emit8(0x01); emit8(0xF7);               // add rdi, rsi
+        emit8(0x4A); emit8(0x8D); emit8(0x3C); emit8(0x8F);   // lea rdi, [rdi + r9*4]
+        emit8(0x89); emit8(0x07);                             // mov [rdi], eax
+        emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // gop_rect(x, y, w, h, color) — draw filled rectangle
     if (call->name == "gop_rect" && call->args.size() == 5) {
-        // rdi=x, rsi=y, rdx=w, rcx=h, r8=color
-        // Stack: save w, color
-        emit8(0x51); // push rcx (h)
-        emit8(0x52); // push rdx (w)
-        emit8(0x41); emit8(0x50); // push r8 (color)
-        
-        // rax = framebuffer + y * pitch
-        emit8(0x48); emit8(0x8B); emit8(0x04); emit8(0x25);
-        emit8(0x00); emit8(0x80); emit8(0x00); emit8(0x00);
-        emit8(0x48); emit8(0x8B); emit8(0x0C); emit8(0x25);
-        emit8(0x08); emit8(0x80); emit8(0x00); emit8(0x00);
-        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8(0xDE); // imul rcx, rsi
-        emit8(0x48); emit8(0x01); emit8(0xC8);
-        // rax += x * 4
-        emit8(0x48); emit8(0x8D); emit8(0x04); emit8(0x87);
-        // rbx = row pointer
-        emit8(0x48); emit8(0x89); emit8(0xC3);
-        // rcx = pitch (for next row calculation)
-        emit8(0x48); emit8(0x8B); emit8(0x0C); emit8(0x25);
-        emit8(0x08); emit8(0x80); emit8(0x00); emit8(0x00);
-        // r9 = w (loop counter)
-        emit8(0x41); emit8(0x58); // pop r9 (color)
-        emit8(0x5A); // pop r8 (w)
-        emit8(0x59); // pop r10 (h)
-        
-        // Row loop
-        int rowStart = newLabel();
-        int rowEnd = newLabel();
-        // rsi = row counter = 0
-        emit8(0x31); emit8(0xF6); // xor esi, esi
-        
-        emitLabel(rowStart);
-        emit8(0x49); emit8(0x39); emit8(0xF2); // cmp r10, rsi
-        emitJcc("e", rowEnd);
-        
-        // Col loop
-        int colStart = newLabel();
-        int colEnd = newLabel();
-        emit8(0x31); emit8(0xFF); // xor edi, edi (x counter)
-        
-        emitLabel(colStart);
-        emit8(0x4C); emit8(0x39); emit8(0xC7); // cmp rdi, r8
-        emitJcc("e", colEnd);
-        
-        // Draw pixel: [rbx + rdi*4] = r9
-        emit8(0x4C); emit8(0x89); emit8(0x7C); emit8(0xFB); emit8(0x04); // mov [r11+rbx*4], rdi (debug)
-        emit8(0x4D); emit8(0x89); emit8(0x04); emit8(0x83); // mov [rbx + rax*4], r9
-        emit8(0x48); emit8(0xFF); emit8(0xC7); // inc rdi
-        emitJmp(colStart);
-        
-        emitLabel(colEnd);
-        // Next row: rbx += pitch
-        emit8(0x48); emit8(0x01); emit8(0xD9);
-        emit8(0x48); emit8(0xFF); emit8(0xC6); // inc rsi
-        emitJmp(rowStart);
-        
-        emitLabel(rowEnd);
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        for (int i = 0; i < 4; i++) {
+            int a = emitExpr(call->args[i].get());
+            if (a != 0) { emitMovReg(0, a); freeReg(a); }
+            else freeReg(0);
+            emit8(0x50);  // push x/y/w/h
+        }
+        int colorReg = emitExpr(call->args[4].get());
+        if (colorReg != 0) { emitMovReg(0, colorReg); freeReg(colorReg); }
+        else freeReg(0);
+        // rax = color; stack: [rsp]=h, [rsp+8]=w, [rsp+16]=y, [rsp+24]=x
+        emit8(0x5A);               // pop rdx (h)
+        emit8(0x59);               // pop rcx (w)
+        emit8(0x41); emit8(0x58);  // pop r8 (y)
+        emit8(0x41); emit8(0x59);  // pop r9 (x)
+        // rbx = framebuffer
+        emit8(0x48); emit8(0x8B); emit8(0x1C); emit8(0x25);
+        emit8(0x00); emit8(0x80); emit8(0x00); emit8(0x00);   // mov rbx, [0x8000]
+        // rsi = pitch
+        emit8(0x48); emit8(0x8B); emit8(0x34); emit8(0x25);
+        emit8(0x08); emit8(0x80); emit8(0x00); emit8(0x00);   // mov rsi, [0x8008]
+        // rdi = framebuffer + y*pitch + x*4
+        emit8(0x49); emit8(0x0F); emit8(0xAF); emit8(0xF0);   // imul rsi, r8 (pitch*y)
+        emit8(0x48); emit8(0x01); emit8(0xF7);               // add rdi, rsi
+        emit8(0x48); emit8(0x01); emit8(0xDF);               // add rdi, rbx
+        emit8(0x4A); emit8(0x8D); emit8(0x3C); emit8(0x8F);   // lea rdi, [rdi + r9*4]
+        // r9 = row counter (0)
+        emit8(0x45); emit8(0x31); emit8(0xC9);               // xor r9d, r9d
+        int rowLbl = newLabel();
+        int rowEndLbl = newLabel();
+        emitLabel(rowLbl);
+        emit8(0x4C); emit8(0x39); emit8(0xCA);               // cmp r9, rdx (h)
+        emitJcc("e", rowEndLbl);
+        // r8 = col counter (0)
+        emit8(0x45); emit8(0x31); emit8(0xC0);               // xor r8d, r8d
+        int colLbl = newLabel();
+        int colEndLbl = newLabel();
+        emitLabel(colLbl);
+        emit8(0x4C); emit8(0x39); emit8(0xC1);               // cmp r8, rcx (w)
+        emitJcc("e", colEndLbl);
+        emit8(0x42); emit8(0x89); emit8(0x04); emit8(0x87);   // mov [rdi + r8*4], eax
+        emit8(0x49); emit8(0xFF); emit8(0xC0);               // inc r8
+        emitJmp(colLbl);
+        emitLabel(colEndLbl);
+        emit8(0x48); emit8(0x01); emit8(0xF7);               // add rdi, rsi (next row)
+        emit8(0x49); emit8(0xFF); emit8(0xC1);               // inc r9
+        emitJmp(rowLbl);
+        emitLabel(rowEndLbl);
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
-    // gop_char(x, y, char, fg, bg) — draw 8x16 character
+    // gop_char(x, y, ch, fg, bg) — draw 8x16 block (simplified glyph)
     if (call->name == "gop_char" && call->args.size() == 5) {
-        // rdi=x, rsi=y, rdx=char, rcx=fg, r8=bg
-        // Simplified: draw 8x16 rectangle with fg color
-        emit8(0x41); emit8(0x89); emit8(0xC8); // mov r8, rcx (fg color)
-        emit8(0x49); emit8(0x51); // push r9 (bg)
-        
-        // rax = framebuffer + y * pitch + x * 4
-        emit8(0x48); emit8(0x8B); emit8(0x04); emit8(0x25);
-        emit8(0x00); emit8(0x80); emit8(0x00); emit8(0x00);
-        emit8(0x48); emit8(0x8B); emit8(0x0C); emit8(0x25);
-        emit8(0x08); emit8(0x80); emit8(0x00); emit8(0x00);
-        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8(0xDE);
-        emit8(0x48); emit8(0x01); emit8(0xC8);
-        emit8(0x4C); emit8(0x8D); emit8(0x04); emit8(0x87);
-        
-        // rbx = start of char
-        emit8(0x48); emit8(0x89); emit8(0xC3);
-        // rsi = row counter
-        emit8(0x31); emit8(0xF6);
-        
-        // Draw 16 rows of 8 pixels
-        int rowLoop = newLabel();
-        int rowEnd = newLabel();
-        
-        emitLabel(rowLoop);
-        emit8(0x48); emit8(0x83); emit8(0xFE); emit8(0x10); // cmp rsi, 16
-        emitJcc("e", rowEnd);
-        
-        // Draw row: 8 pixels
-        emit8(0x41); emit8(0x8B); emit8(0xC0); // mov eax, r8 (fg color)
-        for (int i = 0; i < 8; i++) {
-            emit8(0x89); emit8(0x44); emit8(0x83); emit8(i * 4);
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        for (int i = 0; i < 4; i++) {
+            int a = emitExpr(call->args[i].get());
+            if (a != 0) { emitMovReg(0, a); freeReg(a); }
+            else freeReg(0);
+            emit8(0x50);  // push x/y/ch/fg
         }
-        
-        // Next row: add pitch
-        emit8(0x48); emit8(0x81); emit8(0xC3);
-        emit8(0x00); emit8(0x04); emit8(0x00); emit8(0x00); // add rbx, pitch
-        emit8(0x48); emit8(0xFF); emit8(0xC6); // inc rsi
-        emitJmp(rowLoop);
-        
-        emitLabel(rowEnd);
+        int bgReg = emitExpr(call->args[4].get());
+        if (bgReg != 0) { emitMovReg(0, bgReg); freeReg(bgReg); }
+        else freeReg(0);
+        // rax = bg; stack: [rsp]=fg, [rsp+8]=ch, [rsp+16]=y, [rsp+24]=x
+        emit8(0x41); emit8(0x58);  // pop r8 (fg)
+        emit8(0x41); emit8(0x59);  // pop r9 (ch)
+        emit8(0x41); emit8(0x5A);  // pop r10 (y)
+        emit8(0x41); emit8(0x5B);  // pop r11 (x)
+        // rbx = framebuffer
+        emit8(0x48); emit8(0x8B); emit8(0x1C); emit8(0x25);
+        emit8(0x00); emit8(0x80); emit8(0x00); emit8(0x00);   // mov rbx, [0x8000]
+        // rsi = pitch
+        emit8(0x48); emit8(0x8B); emit8(0x34); emit8(0x25);
+        emit8(0x08); emit8(0x80); emit8(0x00); emit8(0x00);   // mov rsi, [0x8008]
+        // rdi = framebuffer + y*pitch + x*4
+        emit8(0x49); emit8(0x0F); emit8(0xAF); emit8(0xF2);   // imul rsi, r10 (pitch*y)
+        emit8(0x48); emit8(0x01); emit8(0xDF);               // add rdi, rbx
+        emit8(0x48); emit8(0x01); emit8(0xF7);               // add rdi, rsi
+        emit8(0x4A); emit8(0x8D); emit8(0x3C); emit8(0x9F);   // lea rdi, [rdi + r11*4]
+        // r9 = row counter (0), r10 = col counter
+        emit8(0x45); emit8(0x31); emit8(0xC9);               // xor r9d, r9d
+        int rowLbl = newLabel();
+        int rowEndLbl = newLabel();
+        emitLabel(rowLbl);
+        emit8(0x49); emit8(0x83); emit8(0xF9); emit8(0x10);   // cmp r9, 16
+        emitJcc("e", rowEndLbl);
+        emit8(0x45); emit8(0x31); emit8(0xD2);               // xor r10d, r10d
+        int colLbl = newLabel();
+        int colEndLbl = newLabel();
+        emitLabel(colLbl);
+        emit8(0x49); emit8(0x83); emit8(0xFA); emit8(0x08);   // cmp r10, 8
+        emitJcc("e", colEndLbl);
+        emit8(0x46); emit8(0x89); emit8(0x04); emit8(0x97);   // mov [rdi + r10*4], r8d
+        emit8(0x49); emit8(0xFF); emit8(0xC2);               // inc r10
+        emitJmp(colLbl);
+        emitLabel(colEndLbl);
+        emit8(0x48); emit8(0x01); emit8(0xF7);               // add rdi, rsi (next row)
+        emit8(0x49); emit8(0xFF); emit8(0xC1);               // inc r9
+        emitJmp(rowLbl);
+        emitLabel(rowEndLbl);
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
@@ -477,15 +571,34 @@ bool Codegen::tryEFICall(CallExpr* call, int& resultReg) {
 
     // peek32(addr) — read 32-bit value
     if (call->name == "peek32" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int addrReg = emitExpr(call->args[0].get());
+        if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
+        else freeReg(0);
         emit8(0x8B); emit8(0x00); // mov eax, [rax]
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }
 
     // poke32(addr, val) — write 32-bit value
     if (call->name == "poke32" && call->args.size() == 2) {
-        emit8(0x67); emit8(0x89); emit8(0x08); // mov [eax], ecx (using si addressing)
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int valReg = emitExpr(call->args[1].get());
+        if (valReg != 0) { emitMovReg(0, valReg); freeReg(valReg); }
+        else freeReg(0);
+        emit8(0x50);  // push rax (val)
+        int addrReg = emitExpr(call->args[0].get());
+        if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
+        else freeReg(0);
+        emit8(0x5A);  // pop rdx (val)
+        emit8(0x89); emit8(0x10); // mov [rax], edx
         emitMovRegImm(0, 0);
+        regsUsed = 1;
         resultReg = 0;
         return true;
     }

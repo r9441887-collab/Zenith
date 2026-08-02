@@ -16,7 +16,7 @@ kernel_mode: dependent     # Ядро использует UEFI сервисы �
 ### kernel_mode: independent
 - Загрузчик инициализирует GOP и фреймбуфер
 - После входа в ядро UEFI сервисы НЕ доступны
-- `ExitBootServices()` вызывается автоматически
+- `ExitBootServices()` не вызывается автоматически — GOP-функции работают напрямую с фреймбуфером
 - Ядро получает информацию о фреймбуфере через фиксированные адреса памяти
 
 ### kernel_mode: dependent
@@ -31,7 +31,7 @@ kernel_mode: independent
 
 func main() -> int
     gop_clear(0x001F4060)
-    gop_print("Hello from UEFI GOP!")
+    gop_char(10, 10, 72, 0x00FFFFFF, 0x001F4060)  # 72 = 'H'
     halt()
     return 0
 end
@@ -55,6 +55,10 @@ zenith boot.z -o myos.efi  # -> myos.efi
 | `gop_pixel(x, y, color)` | Нарисовать пиксель |
 | `gop_rect(x, y, w, h, color)` | Нарисовать заполненный прямоугольник |
 | `gop_char(x, y, char, fg, bg)` | Нарисовать символ 8x16 |
+
+> Функции `gop_print` не существует. Текст через GOP выводится посимвольно через
+> `gop_char` (символ передаётся как ASCII-код). Для текстового вывода в
+> `kernel_mode: dependent` используйте `efi_print()`.
 
 ## Функции фреймбуфера
 
@@ -110,7 +114,7 @@ zenith boot.z -o myos.efi  # -> myos.efi
 | `peek(addr)` | Прочитать 8 байт |
 | `poke(addr, val)` | Записать 8 байт |
 
-## Прерывания и порты (vide hard)
+## Прерывания и порты (hardware)
 
 | Функция | Описание |
 |---------|----------|

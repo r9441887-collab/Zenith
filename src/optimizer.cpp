@@ -37,6 +37,8 @@ void Optimizer::collectFuncRefsInExpr(Expr* expr, std::unordered_set<std::string
     } else if (auto arr = dynamic_cast<ArrayAccessExpr*>(expr)) {
         collectFuncRefsInExpr(arr->array.get(), refs, prog);
         collectFuncRefsInExpr(arr->index.get(), refs, prog);
+    } else if (auto deref = dynamic_cast<DerefExpr*>(expr)) {
+        collectFuncRefsInExpr(deref->ptr.get(), refs, prog);
     }
 }
 
@@ -54,6 +56,9 @@ void Optimizer::collectFuncRefsInStmt(Stmt* stmt, std::unordered_set<std::string
         if (isUserFunc(assign->name, prog)) {
             refs.insert(assign->name);
         }
+    } else if (auto ptrAssign = dynamic_cast<PtrAssignStmt*>(stmt)) {
+        collectFuncRefsInExpr(ptrAssign->ptr.get(), refs, prog);
+        collectFuncRefsInExpr(ptrAssign->value.get(), refs, prog);
     } else if (auto ifStmt = dynamic_cast<IfStmt*>(stmt)) {
         collectFuncRefsInExpr(ifStmt->condition.get(), refs, prog);
         collectFuncRefsInBlock(ifStmt->thenBlock, refs, prog);
@@ -98,6 +103,8 @@ void Optimizer::collectGlobalRefsInExpr(Expr* expr, std::unordered_set<std::stri
     } else if (auto arr = dynamic_cast<ArrayAccessExpr*>(expr)) {
         collectGlobalRefsInExpr(arr->array.get(), refs, prog);
         collectGlobalRefsInExpr(arr->index.get(), refs, prog);
+    } else if (auto deref = dynamic_cast<DerefExpr*>(expr)) {
+        collectGlobalRefsInExpr(deref->ptr.get(), refs, prog);
     }
 }
 
@@ -115,6 +122,9 @@ void Optimizer::collectGlobalRefsInStmt(Stmt* stmt, std::unordered_set<std::stri
         if (isGlobal(assign->name, prog)) {
             refs.insert(assign->name);
         }
+    } else if (auto ptrAssign = dynamic_cast<PtrAssignStmt*>(stmt)) {
+        collectGlobalRefsInExpr(ptrAssign->ptr.get(), refs, prog);
+        collectGlobalRefsInExpr(ptrAssign->value.get(), refs, prog);
     } else if (auto ifStmt = dynamic_cast<IfStmt*>(stmt)) {
         collectGlobalRefsInExpr(ifStmt->condition.get(), refs, prog);
         collectGlobalRefsInBlock(ifStmt->thenBlock, refs, prog);

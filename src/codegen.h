@@ -103,6 +103,8 @@ private:
     void emitFunction(FunctionDecl* func);
     int emitExpr(Expr* expr);
     void emitStmt(Stmt* stmt, const Type* stmtType = nullptr);
+    void emitAsmInstr(const AsmInstr& instr);
+    int asmRegIndex(const std::string& name) const;
     int emitFloatExpr(Expr* expr);
     int emitBinaryExpr(BinaryExpr* bin, bool isFloat);
     void emitFloatStoreToBP(int xmm, int offset);

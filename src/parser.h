@@ -37,6 +37,7 @@ private:
     std::unique_ptr<Expr> parsePrimary();
     std::unique_ptr<Expr> parseCallOrIdent();
     std::unique_ptr<Expr> parseDotChain(std::unique_ptr<Expr> left);
+    std::string readAsmOperand();
     void parseAppType(Program& prog);
     Block parseBlock(TokenKind terminator = TokenKind::End);
     Type parseType();

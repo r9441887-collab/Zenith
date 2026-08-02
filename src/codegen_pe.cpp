@@ -438,7 +438,7 @@ void Codegen::fixupSectionRVAs() {
     heapOffsetRVA += dData;
     heapFreeHeadRVA += dData;
     heapAreaRVA += dData;
-    if (prog.appType == AppType::GUI) {
+    if (prog.appType == AppType::GUI || prog.appType == AppType::EFI) {
         win32GlobalsRVA += dData;
     }
 
@@ -1144,6 +1144,11 @@ void Codegen::buildImportData() {
             // Software globals: 56 bytes
             for (int k = 0; k < 56; k++) data.push_back(0);
         }
+    } else if (prog.appType == AppType::EFI) {
+        // EFI globals: ImageHandle (8) + SystemTable (8)
+        // Populated by the EFI entry point from the EfiMain parameters.
+        win32GlobalsRVA = dataRVA + (uint32_t)data.size();
+        for (int k = 0; k < 16; k++) data.push_back(0);
     }
 
     // === EMBEDDED DLL: .data entries ===

@@ -116,7 +116,7 @@ zenith kernel.z -o os     # → os.bin
 | `peek32(addr)` | Прочитать 4 байта |
 | `poke32(addr, val)` | Записать 4 байта |
 
-## Прерывания и порты (vide hard)
+## Прерывания и порты (hardware)
 
 | Функция | Описание |
 |---------|----------|
@@ -145,11 +145,11 @@ func main() -> int
 end
 ```
 
-## Пример: bare hard с физической памятью
+## Пример: bare с физической памятью
 
 ```zenith
 app bare
-vide hard
+kernel_mode: independent
 
 func main() -> int
     var vga: phys ptr<int> = 0xB8000
@@ -172,14 +172,13 @@ kernel_mode: dependent
 
 func main() -> int
     bios_video_mode(3)      # 80x25 текстовый режим
-    
-    loop:
+
+    while true
         var c: int = bios_get_char()
         if c != 0
-            goto loop
+            halt()
         end
-    
-    halt()
+    end
     return 0
 end
 ```
@@ -205,7 +204,6 @@ end
 
 ```zenith
 app bare
-vide hard
 kernel_mode: independent
 
 func main() -> int
