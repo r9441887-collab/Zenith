@@ -110,6 +110,7 @@ Token Lexer::scanIdentOrKeyword() {
 
     static const std::unordered_map<std::string, TokenKind> keywords = {
         {"func", TokenKind::Func}, {"var", TokenKind::Var}, {"let", TokenKind::Let},
+        {"const", TokenKind::Const},
         {"if", TokenKind::If}, {"else", TokenKind::Else},
         {"while", TokenKind::While}, {"for", TokenKind::For},
         {"return", TokenKind::Return}, {"end", TokenKind::End},
@@ -117,11 +118,16 @@ Token Lexer::scanIdentOrKeyword() {
         {"import", TokenKind::Import},
         {"struct", TokenKind::Struct}, {"extern", TokenKind::Extern},
         {"app", TokenKind::App}, {"from", TokenKind::From},
+        {"switch", TokenKind::Switch}, {"case", TokenKind::Case}, {"break", TokenKind::Break},
+        {"continue", TokenKind::Continue}, {"loop", TokenKind::Loop},
         {"int", TokenKind::TypeInt}, {"float", TokenKind::TypeFloat},
         {"bool", TokenKind::TypeBool}, {"string", TokenKind::TypeString},
         {"void", TokenKind::TypeVoid}, {"vec2", TokenKind::TypeVec2},
         {"vec3", TokenKind::TypeVec3}, {"color", TokenKind::TypeColor},
         {"entity", TokenKind::TypeEntity},
+        {"virt", TokenKind::Virt}, {"phys", TokenKind::Phys},
+        {"ptr", TokenKind::Ptr}, {"asm", TokenKind::Asm},
+        {"vide", TokenKind::Vide},
     };
 
     auto it = keywords.find(word);
@@ -195,6 +201,7 @@ Token Lexer::scanToken() {
             return makeToken(TokenKind::Minus);
         case '*': return makeToken(TokenKind::Star);
         case '/': return makeToken(TokenKind::Slash);
+        case '%': return makeToken(TokenKind::Percent);
         case '.': return makeToken(TokenKind::Dot);
         case '(': return makeToken(TokenKind::LParen);
         case ')': return makeToken(TokenKind::RParen);
@@ -212,17 +219,23 @@ Token Lexer::scanToken() {
             if (match('=')) return makeToken(TokenKind::NotEq);
             return makeToken(TokenKind::Bang);
         case '<':
+            if (match('<')) return makeToken(TokenKind::ShiftLeft);
             if (match('=')) return makeToken(TokenKind::LtEq);
             return makeToken(TokenKind::Lt);
         case '>':
+            if (match('>')) return makeToken(TokenKind::ShiftRight);
             if (match('=')) return makeToken(TokenKind::GtEq);
             return makeToken(TokenKind::Gt);
         case '&':
             if (match('&')) return makeToken(TokenKind::AmpAmp);
-            return makeError("Unexpected character: &");
+            return makeToken(TokenKind::Amp);
         case '|':
             if (match('|')) return makeToken(TokenKind::PipePipe);
-            return makeError("Unexpected character: |");
+            return makeToken(TokenKind::Pipe);
+        case '^':
+            return makeToken(TokenKind::Caret);
+        case '~':
+            return makeToken(TokenKind::Tilde);
         default:
             return makeError("Unexpected character: " + std::string(1, c));
     }

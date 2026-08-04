@@ -6,12 +6,21 @@
 
 enum class TypeKind { Int, Float, Bool, Void, String, Vec2, Vec3, Color, Entity, Struct };
 
-enum class AppType { Console, GUI, EFI };
+enum class AppType { Console, GUI, EFI, BIOS, Bare };
+enum class AppCategory { Tool, Game };
 enum class RenderType { Software, DX11 };
+enum class AddressSpace { Virtual, Physical };
+enum class Mode { Easy, Hard };
+enum class KernelMode { Independent, Dependent };
 
 struct Type {
     TypeKind kind = TypeKind::Void;
     std::string structName;
+    bool isPtr = false;
+    AddressSpace addrSpace = AddressSpace::Virtual;
+
+    Type(TypeKind k = TypeKind::Void, std::string name = "", bool ptr = false, AddressSpace as = AddressSpace::Virtual)
+        : kind(k), structName(std::move(name)), isPtr(ptr), addrSpace(as) {}
 };
 
 struct Node {
@@ -42,6 +51,14 @@ struct BinaryExpr : Expr {
     std::unique_ptr<Expr> left;
     std::string op;
     std::unique_ptr<Expr> right;
+};
+
+struct DerefExpr : Expr {
+    std::unique_ptr<Expr> ptr;
+};
+
+struct AddressOfExpr : Expr {
+    std::string name;
 };
 
 struct UnaryExpr : Expr {
@@ -95,6 +112,11 @@ struct AssignStmt : Stmt {
     std::unique_ptr<Expr> value;
 };
 
+struct PtrAssignStmt : Stmt {
+    std::unique_ptr<Expr> ptr;
+    std::unique_ptr<Expr> value;
+};
+
 struct IfStmt : Stmt {
     std::unique_ptr<Expr> condition;
     Block thenBlock;
@@ -106,11 +128,38 @@ struct WhileStmt : Stmt {
     Block body;
 };
 
+struct LoopStmt : Stmt {
+    Block body;
+};
+
+struct SwitchCase {
+    std::unique_ptr<Expr> condition; // nullptr for default
+    Block body;
+};
+
+struct SwitchStmt : Stmt {
+    std::unique_ptr<Expr> condition;
+    std::vector<SwitchCase> cases;
+};
+
+struct BreakStmt : Stmt {};
+struct ContinueStmt : Stmt {};
+
+struct AsmInstr {
+    std::string mnemonic;
+    std::string op1;
+    std::string op2;
+};
+
+struct AsmStmt : Stmt {
+    std::vector<AsmInstr> instrs;
+};
+
 struct ForStmt : Stmt {
     std::string varName;
     std::unique_ptr<Expr> start;
     std::unique_ptr<Expr> end;
-    std::unique_ptr<Expr> step;   // optional, nullptr means step=1
+    std::unique_ptr<Expr> step; // optional, nullptr means step=1
     Block body;
 };
 
@@ -135,7 +184,7 @@ struct StructDecl : Node {
 
 struct ImportDecl {
     std::string dllName;
-    std::string module;  // e.g. "thread" from @import("libs.dll::thread")
+    std::string module; // e.g. "thread" from @import("libs.dll::thread")
 };
 
 struct Program {
@@ -144,6 +193,9 @@ struct Program {
     std::vector<ImportDecl> imports;
     std::vector<std::unique_ptr<StructDecl>> structs;
     AppType appType = AppType::Console;
+    AppCategory appCategory = AppCategory::Tool;
     RenderType renderType = RenderType::Software;
-    bool isLibrary = false;  // true if # [no_main] is present
+    Mode mode = Mode::Hard;
+    bool isLibrary = false; // true if # [no_main] is present
+    KernelMode kernelMode = KernelMode::Independent;
 };

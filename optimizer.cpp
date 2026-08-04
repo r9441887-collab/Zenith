@@ -37,6 +37,8 @@ void Optimizer::collectFuncRefsInExpr(Expr* expr, std::unordered_set<std::string
     } else if (auto arr = dynamic_cast<ArrayAccessExpr*>(expr)) {
         collectFuncRefsInExpr(arr->array.get(), refs, prog);
         collectFuncRefsInExpr(arr->index.get(), refs, prog);
+    } else if (auto deref = dynamic_cast<DerefExpr*>(expr)) {
+        collectFuncRefsInExpr(deref->ptr.get(), refs, prog);
     }
 }
 
@@ -54,6 +56,9 @@ void Optimizer::collectFuncRefsInStmt(Stmt* stmt, std::unordered_set<std::string
         if (isUserFunc(assign->name, prog)) {
             refs.insert(assign->name);
         }
+    } else if (auto ptrAssign = dynamic_cast<PtrAssignStmt*>(stmt)) {
+        collectFuncRefsInExpr(ptrAssign->ptr.get(), refs, prog);
+        collectFuncRefsInExpr(ptrAssign->value.get(), refs, prog);
     } else if (auto ifStmt = dynamic_cast<IfStmt*>(stmt)) {
         collectFuncRefsInExpr(ifStmt->condition.get(), refs, prog);
         collectFuncRefsInBlock(ifStmt->thenBlock, refs, prog);
@@ -61,11 +66,21 @@ void Optimizer::collectFuncRefsInStmt(Stmt* stmt, std::unordered_set<std::string
     } else if (auto whileStmt = dynamic_cast<WhileStmt*>(stmt)) {
         collectFuncRefsInExpr(whileStmt->condition.get(), refs, prog);
         collectFuncRefsInBlock(whileStmt->body, refs, prog);
+    } else if (auto loopStmt = dynamic_cast<LoopStmt*>(stmt)) {
+        collectFuncRefsInBlock(loopStmt->body, refs, prog);
+    } else if (auto switchStmt = dynamic_cast<SwitchStmt*>(stmt)) {
+        collectFuncRefsInExpr(switchStmt->condition.get(), refs, prog);
+        for (auto& sc : switchStmt->cases) {
+            collectFuncRefsInExpr(sc.condition.get(), refs, prog);
+            collectFuncRefsInBlock(sc.body, refs, prog);
+        }
     } else if (auto forStmt = dynamic_cast<ForStmt*>(stmt)) {
         collectFuncRefsInExpr(forStmt->start.get(), refs, prog);
         collectFuncRefsInExpr(forStmt->end.get(), refs, prog);
         collectFuncRefsInExpr(forStmt->step.get(), refs, prog);
         collectFuncRefsInBlock(forStmt->body, refs, prog);
+    } else if (dynamic_cast<AsmStmt*>(stmt)) {
+        // AsmStmt may reference any function/global — conservatively mark nothing
     }
 }
 
@@ -96,6 +111,8 @@ void Optimizer::collectGlobalRefsInExpr(Expr* expr, std::unordered_set<std::stri
     } else if (auto arr = dynamic_cast<ArrayAccessExpr*>(expr)) {
         collectGlobalRefsInExpr(arr->array.get(), refs, prog);
         collectGlobalRefsInExpr(arr->index.get(), refs, prog);
+    } else if (auto deref = dynamic_cast<DerefExpr*>(expr)) {
+        collectGlobalRefsInExpr(deref->ptr.get(), refs, prog);
     }
 }
 
@@ -113,6 +130,9 @@ void Optimizer::collectGlobalRefsInStmt(Stmt* stmt, std::unordered_set<std::stri
         if (isGlobal(assign->name, prog)) {
             refs.insert(assign->name);
         }
+    } else if (auto ptrAssign = dynamic_cast<PtrAssignStmt*>(stmt)) {
+        collectGlobalRefsInExpr(ptrAssign->ptr.get(), refs, prog);
+        collectGlobalRefsInExpr(ptrAssign->value.get(), refs, prog);
     } else if (auto ifStmt = dynamic_cast<IfStmt*>(stmt)) {
         collectGlobalRefsInExpr(ifStmt->condition.get(), refs, prog);
         collectGlobalRefsInBlock(ifStmt->thenBlock, refs, prog);
@@ -120,11 +140,21 @@ void Optimizer::collectGlobalRefsInStmt(Stmt* stmt, std::unordered_set<std::stri
     } else if (auto whileStmt = dynamic_cast<WhileStmt*>(stmt)) {
         collectGlobalRefsInExpr(whileStmt->condition.get(), refs, prog);
         collectGlobalRefsInBlock(whileStmt->body, refs, prog);
+    } else if (auto loopStmt = dynamic_cast<LoopStmt*>(stmt)) {
+        collectGlobalRefsInBlock(loopStmt->body, refs, prog);
+    } else if (auto switchStmt = dynamic_cast<SwitchStmt*>(stmt)) {
+        collectGlobalRefsInExpr(switchStmt->condition.get(), refs, prog);
+        for (auto& sc : switchStmt->cases) {
+            collectGlobalRefsInExpr(sc.condition.get(), refs, prog);
+            collectGlobalRefsInBlock(sc.body, refs, prog);
+        }
     } else if (auto forStmt = dynamic_cast<ForStmt*>(stmt)) {
         collectGlobalRefsInExpr(forStmt->start.get(), refs, prog);
         collectGlobalRefsInExpr(forStmt->end.get(), refs, prog);
         collectGlobalRefsInExpr(forStmt->step.get(), refs, prog);
         collectGlobalRefsInBlock(forStmt->body, refs, prog);
+    } else if (dynamic_cast<AsmStmt*>(stmt)) {
+        // AsmStmt may reference any function/global — conservatively mark nothing
     }
 }
 
@@ -178,6 +208,17 @@ OptResult Optimizer::optimize(Program& prog) {
     std::unordered_set<std::string> reachable;
     findReachable(entryFunc, reachable, prog);
 
+    // Functions referenced from global initializers must be kept as well
+    // (e.g. `var x: int = compute()`) — otherwise the init code would call
+    // into a function that got stripped.
+    for (auto& g : prog.globals) {
+        std::unordered_set<std::string> refs;
+        collectFuncRefsInExpr(g->init.get(), refs, prog);
+        for (auto& r : refs) {
+            findReachable(r, reachable, prog);
+        }
+    }
+
     std::unordered_set<std::string> usedExterns;
     for (auto& func : prog.functions) {
         if (!func->isExtern && reachable.count(func->name)) {
@@ -216,6 +257,25 @@ OptResult Optimizer::optimize(Program& prog) {
             collectGlobalRefsInBlock(func->body, usedGlobals, prog);
         }
     }
+
+    // A global referenced from another global's initializer must be kept too
+    // (e.g. `var b: int = a` — `a` is only reachable through `b`'s init).
+    bool globalChanged;
+    do {
+        globalChanged = false;
+        for (auto& g : prog.globals) {
+            if (usedGlobals.count(g->name)) {
+                std::unordered_set<std::string> refs;
+                collectGlobalRefsInExpr(g->init.get(), refs, prog);
+                for (auto& r : refs) {
+                    if (!usedGlobals.count(r)) {
+                        usedGlobals.insert(r);
+                        globalChanged = true;
+                    }
+                }
+            }
+        }
+    } while (globalChanged);
 
     auto git = std::remove_if(prog.globals.begin(), prog.globals.end(),
         [&](const std::unique_ptr<VarDecl>& var) {

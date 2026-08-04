@@ -59,10 +59,14 @@ void Codegen::emitDX11Init() {
     emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xC4); emit32(0);
 
     // Set up call parameters
-    // [rsp+0x20] = pFeatureLevels = NULL
-    emit8(0x48); emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x20); emit32(0);
-    // [rsp+0x28] = FeatureLevels = 0
-    emit8(0x48); emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x28); emit32(0);
+    // [rsp+0xF0] = D3D_FEATURE_LEVEL_11_0 (0xB000) - force FL 11_0 to avoid
+    // the NVIDIA driver's convolution path that crashes with our layout
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xF0); emit32(0xB000);
+    // [rsp+0x20] = pFeatureLevels = &level
+    emit8(0x48); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0xF0);
+    emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8(0x20);
+    // [rsp+0x28] = FeatureLevels = 1
+    emit8(0x48); emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x28); emit32(1);
     // [rsp+0x30] = SDKVersion = D3D11_SDK_VERSION (7)
     emit8(0x48); emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x30); emit32(7);
     // [rsp+0x38] = &SWAP_CHAIN_DESC
@@ -93,6 +97,11 @@ void Codegen::emitDX11Init() {
     emit8(0xFF); emit8(0x15);
     importCallFixups.push_back({code.size(), "D3D11CreateDeviceAndSwapChain", "d3d11.dll"});
     emit32(0);
+
+    // Check HRESULT, skip DX11 init if failed
+    int dx11Failed = newLabel();
+    emit8(0x85); emit8(0xC0);  // test eax, eax
+    emitJcc("<", dx11Failed);  // jl = jump if sign (FAILED)
 
     // Store device, context, swapChain in globals
     // [globals+56] = device
@@ -152,6 +161,9 @@ void Codegen::emitDX11Init() {
     emit8(0x4C); emit8(0x8D); emit8(0x8C); emit8(0x24); emit32(0x88); // r9 = &rtv
     emit8(0xFF); emit8(0xD0);                             // call rax
     // rtv is now at [rsp+0x88]
+    // Store rtv in globals+80 for cleanup
+    emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0x88); // rax = [rsp+0x88]
+    emit8(0x48); emit8(0x89); emit8(0x43); emit8(0x50);               // [rbx+80] = rtv
 
     // --- Release backBuffer ---
     // backBuffer->vtable[2](backBuffer) = Release
@@ -173,6 +185,40 @@ void Codegen::emitDX11Init() {
     emit8(0xBA); emit32(1);                               // rdx = 1 (NumViews)
     emit8(0x4C); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0x88); // r8 = &rtv
     emit8(0x45); emit8(0x33); emit8(0xC9);               // r9d = 0 (pDepthStencilView = NULL)
+    emit8(0xFF); emit8(0xD0);                             // call rax
+
+    // --- ID3D11DeviceContext::ClearRenderTargetView(context, rtv, {0,0,0,1}) ---
+    // vtable index 50 (offset 0x190), verified via runtime probe (RTV cleared to red)
+    // color array at [rsp+0xD0] (16 bytes, overwritten later by D3D11_MAPPED_SUBRESOURCE)
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xD0); emit32(0);        // [rsp+0xD0] = 0.0f R
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xD4); emit32(0);        // [rsp+0xD4] = 0.0f G
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xD8); emit32(0);        // [rsp+0xD8] = 0.0f B
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xDC); emit32(0x3F800000); // [rsp+0xDC] = 1.0f A
+    emit8(0x48); emit8(0x8B); emit8(0x43); emit8(0x40);  // rax = [rbx+64] = context
+    emit8(0x48); emit8(0x8B); emit8(0x00);                // rax = vtable
+    emit8(0x48); emit8(0x8B); emit8(0x80); emit32(0x190); // rax = [rax+400] = ClearRenderTargetView
+    emit8(0x48); emit8(0x8B); emit8(0x4B); emit8(0x40);  // rcx = context (this)
+    emit8(0x48); emit8(0x8B); emit8(0x94); emit8(0x24); emit32(0x88); // rdx = rtv
+    emit8(0x4C); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0xD0); // r8 = &color
+    emit8(0xFF); emit8(0xD0);                             // call rax
+
+    // --- ID3D11DeviceContext::RSSetViewports(context, 1, &viewport) ---
+    // Without a bound viewport D3D11 clips all geometry (GPU draws render nothing).
+    // D3D11_VIEWPORT at [rsp+0xE8] (24 bytes): TopLeftX, TopLeftY, Width, Height, MinDepth, MaxDepth
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xE8); emit32(0);        // TopLeftX = 0
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xEC); emit32(0);        // TopLeftY = 0
+    emit8(0xF3); emit8(0x0F); emit8(0x2A); emit8(0x43); emit8(0x20);      // cvtsi2ss xmm0, [rbx+32] = width
+    emit8(0xF3); emit8(0x0F); emit8(0x11); emit8(0x84); emit8(0x24); emit32(0xF0); // movss [rsp+0xF0], xmm0
+    emit8(0xF3); emit8(0x0F); emit8(0x2A); emit8(0x43); emit8(0x24);      // cvtsi2ss xmm0, [rbx+36] = height
+    emit8(0xF3); emit8(0x0F); emit8(0x11); emit8(0x84); emit8(0x24); emit32(0xF4); // movss [rsp+0xF4], xmm0
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xF8); emit32(0);        // MinDepth = 0
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xFC); emit32(0x3F800000); // MaxDepth = 1
+    emit8(0x48); emit8(0x8B); emit8(0x43); emit8(0x40);  // rax = [rbx+64] = context
+    emit8(0x48); emit8(0x8B); emit8(0x00);                // rax = vtable
+    emit8(0x48); emit8(0x8B); emit8(0x80); emit32(0x160); // rax = [rax+352] = RSSetViewports
+    emit8(0x48); emit8(0x8B); emit8(0x4B); emit8(0x40);  // rcx = context (this)
+    emit8(0xBA); emit32(1);                               // rdx = 1 (NumViewports)
+    emit8(0x4C); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0xE8); // r8 = &viewport
     emit8(0xFF); emit8(0xD0);                             // call rax
 
     // --- Create staging texture ---
@@ -229,6 +275,57 @@ void Codegen::emitDX11Init() {
     emit8(0x48); emit8(0x8B); emit8(0x84); emit8(0x24); emit32(0xD0); // rax = mapped.pData
     emit8(0x48); emit8(0x89); emit8(0x43); emit8(0x28);  // [rbx+40] = framebuf
 
+    // --- Create rasterizer state with CullMode=NONE ---
+    // D3D11's default rasterizer uses CullMode=BACK, which culls
+    // back-facing triangles (counter-clockwise in screen space with
+    // FrontCounterClockwise=FALSE). User geometry has arbitrary
+    // winding, so disable culling to ensure draws always render.
+    // D3D11_RASTERIZER_DESC at [rsp+0xE0] (40 bytes)
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xE0); emit32(3);     // FillMode = D3D11_FILL_SOLID (3)
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xE4); emit32(1);     // CullMode = D3D11_CULL_NONE (1)
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xE8); emit32(0);     // FrontCounterClockwise = FALSE
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xEC); emit32(0);     // DepthBias = 0
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xF0); emit32(0);     // DepthBiasClamp = 0.0f
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xF4); emit32(0);     // SlopeScaledDepthBias = 0.0f
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xF8); emit32(1);     // DepthClipEnable = TRUE
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0xFC); emit32(0);     // ScissorEnable = FALSE
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x100); emit32(0);    // MultisampleEnable = FALSE
+    emit8(0xC7); emit8(0x84); emit8(0x24); emit32(0x104); emit32(0);    // AntialiasedLineEnable = FALSE
+
+    // device->CreateRasterizerState(device, &desc, &rs) - vtable[22]
+    emit8(0x48); emit8(0x8B); emit8(0x43); emit8(0x38);  // rax = [rbx+56] = device
+    emit8(0x48); emit8(0x8B); emit8(0x00);                // rax = vtable
+    emit8(0x48); emit8(0x8B); emit8(0x80); emit32(0xB0);  // rax = [rax+176] = CreateRasterizerState
+    emit8(0x48); emit8(0x8B); emit8(0x4B); emit8(0x38);  // rcx = device (this)
+    emit8(0x48); emit8(0x8D); emit8(0x94); emit8(0x24); emit32(0xE0);  // rdx = &desc
+    emit8(0x4C); emit8(0x8D); emit8(0x84); emit8(0x24); emit32(0x108); // r8 = &rs
+    emit8(0xFF); emit8(0xD0);                             // call rax
+    // rs at [rsp+0x108]; kept alive for program lifetime (D3D11 setters
+    // do not retain a reference, so do not release here).
+
+    // context->RSSetState(context, rs) - vtable[43]
+    emit8(0x48); emit8(0x8B); emit8(0x43); emit8(0x40);   // rax = [rbx+64] = context
+    emit8(0x48); emit8(0x8B); emit8(0x00);                // rax = vtable
+    emit8(0x48); emit8(0x8B); emit8(0x80); emit32(0x158); // rax = [rax+344] = RSSetState
+    emit8(0x48); emit8(0x8B); emit8(0x4B); emit8(0x40);   // rcx = context (this)
+    emit8(0x48); emit8(0x8B); emit8(0x94); emit8(0x24); emit32(0x108); // rdx = rs
+    emit8(0xFF); emit8(0xD0);                             // call rax
+
+    // Jump over error handler
+    int dx11Done = newLabel();
+    emitJmp(dx11Done);
+    emitLabel(dx11Failed);
+
+    // D3D11CreateDeviceAndSwapChain failed - zero out COM pointers and framebuf
+    emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x38); emit32(0);  // [rbx+56] = device = 0
+    emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x40); emit32(0);  // [rbx+64] = context = 0
+    emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x48); emit32(0);  // [rbx+72] = swapChain = 0
+    emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x50); emit32(0);  // [rbx+80] = rtv = 0
+    emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x58); emit32(0);  // [rbx+88] = stagingTexture = 0
+    emit8(0x48); emit8(0xC7); emit8(0x43); emit8(0x28); emit32(0);  // [rbx+40] = framebuf = 0
+
+    emitLabel(dx11Done);
+
     // Restore stack
     emit8(0x48); emit8(0x81); emit8(0xC4); emit32(0x120);
 }
@@ -273,6 +370,10 @@ void Codegen::emitDX11Present() {
         int iidIdx = -1;
         for (size_t i = 0; i < stringPool.size(); i++) {
             if (stringPool[i] == iidBytes) { iidIdx = (int)i; break; }
+        }
+        if (iidIdx < 0) {
+            iidIdx = (int)stringPool.size();
+            stringPool.push_back(iidBytes);
         }
         heapFixups.push_back({code.size(), stringRVA + stringOffsets[iidIdx]});
     }

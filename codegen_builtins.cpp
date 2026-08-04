@@ -1,4 +1,4 @@
-#include "codegen.h"
+﻿#include "codegen.h"
 #include "ast.h"
 #include "parser.h"
 #include <iostream>
@@ -56,7 +56,7 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);  // rdx = offset
         emit8(0x48); emit8(0x89); emit8(0xD1);  // mov rcx, rdx
         emit8(0x48); emit8(0x01); emit8(0xD9);  // add rcx, rbx (newOffset)
-        emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
+        emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024 * 1024);
         emit8(0x0F); emit8(0x87);
         jmpFixups.push_back({code.size(), failLabel}); emit32(0);
 
@@ -112,7 +112,7 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);  // rdx = offset
         emit8(0x49); emit8(0x89); emit8(0xC0); // r8 = rax (save heapArea)
         emit8(0x48); emit8(0x03); emit8(0xCA); // rcx = totalSize + offset = newOffset
-        emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
+        emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024 * 1024);
         int fl = newLabel();
         emit8(0x0F); emit8(0x87); jmpFixups.push_back({code.size(), fl}); emit32(0);
         emit8(0x48); emit8(0x89); emit8(0x0D);
@@ -231,27 +231,24 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
     }
 
     // ============== Pool Allocator Builtins ==============
-    // Pool header: [blockSize:8][count:8][nextIdx:8], data at handle+24
-    // Monotonic next-index allocator: O(1) alloc, reset to free all
+    // Pool header: [blockSize:8][count:8][nextIdx:8][freeHead:8], data at handle+32
+    // O(1) alloc from free list or nextIdx, poolFree recycles blocks, poolDestroy frees block to heap
 
     // poolCreate(blockSize, count) -> handle
-    // Header: [blockSize:8][count:8][nextIdx:8], data at handle+24
     if (call->name == "poolCreate" && call->args.size() == 2) {
         int saved = regsUsed;
         spillRegs();
         regsUsed = 0;
         int bs = emitExpr(call->args[0].get());
         int cnt = emitExpr(call->args[1].get());
-        // Save capacity in reg 3 (rbx) and count on stack
         if (bs != 3) { emitMovReg(3, bs); freeReg(bs); }
         if (cnt != 0) { emitMovReg(0, cnt); freeReg(cnt); }
         emit8(0x50); // push rax (count)
         emit8(0x58); // pop rcx (count in rcx)
-        // rax = blockSize * count + 24
+        // rax = blockSize * count + 32
         emitMovReg(0, 3);
         emitImul(0, 1);  // rax *= rcx (count)
-        emit8(0x48); emit8(0x83); emit8(0xC0); emit8(24);
-        // Push count again for header store after alloc
+        emit8(0x48); emit8(0x83); emit8(0xC0); emit8(32);
         emit8(0x51); // push rcx (count)
         emitHeapAlloc(0);  // rax = block pointer
         // Store header fields
@@ -259,6 +256,7 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         emit8(0x59); // pop rcx (count)
         emitStoreQwordDisp8(1, 0, 8);  // [rax+8] = count (rcx)
         emitMovQwordDisp8Imm32(0, 16, 0); // [rax+16] = 0 (nextIdx)
+        emitMovQwordDisp8Imm32(0, 24, -1); // [rax+24] = -1 (freeHead)
         freeReg(3);
         regsUsed = (uint8_t)saved;
         reloadRegs();
@@ -274,44 +272,67 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         spillRegs();
         regsUsed = 0;
         int pReg = emitExpr(call->args[0].get());
-        // Fix: move handle to rbx to avoid clobbering
         if (pReg != 3) { emitMovReg(3, pReg); freeReg(pReg); }
         regsUsed |= (1 << 3);
-        // Load nextIdx into rax
-        emitLoadQwordDisp8(0, 3, 16);
-        regsUsed |= (1 << 0); // rax holds nextIdx
-        // Load count into free reg
-        int cReg = allocReg();
-        emitLoadQwordDisp8(cReg, 3, 8);
-        // cmp rax, cReg (nextIdx vs count)
-        emit8(0x48); emit8(0x39); emit8((uint8_t)(0xC0 + cReg)); // cmp rax, cReg
-        freeReg(cReg);
-        // jae overflow (return 0)
-        int overflow = newLabel();
-        emit8(0x0F); emit8(0x83); // jae
-        jmpFixups.push_back({code.size(), overflow}); emit32(0);
-        // ptr = rbx + 24 + nextIdx * blockSize
+
+        int freeListLabel = newLabel();
+        int seqLabel = newLabel();
+        int overflowLabel = newLabel();
+        int doneLabel = newLabel();
+
+        emitLoadQwordDisp8(0, 3, 24); // rax = freeHead
+        emit8(0x48); emit8(0x83); emit8(0xF8); emit8((uint8_t)(int8_t)-1); // cmp rax, -1
+        emitJcc("!=", freeListLabel);
+        emitJmp(seqLabel);
+
+        emitLabel(freeListLabel);
+        emit8(0x50); // push rax (idx)
         int bsReg = allocReg();
-        emitLoadQwordDisp8(bsReg, 3, 0); // bsReg = blockSize
-        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8((uint8_t)(0xC0 + bsReg)); // imul rax, bsReg
+        emitLoadQwordDisp8(bsReg, 3, 0);
+        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8((uint8_t)(0xC0 + bsReg));
         freeReg(bsReg);
-        emitAdd(0, 3); // rax += rbx (base)
-        emit8(0x48); emit8(0x83); emit8(0xC0); emit8(24); // rax += 24
-        // rax = ptr
+        emitAdd(0, 3);
+        emit8(0x48); emit8(0x83); emit8(0xC0); emit8(32);
+        emit8(0x48); emit8(0x8B); emit8(0x08); // rcx = [rax] (nextFree)
+        emitStoreQwordDisp8(1, 3, 24); // [rbx+24] = nextFree
+        emit8(0x58); // pop rax (idx)
+        bsReg = allocReg();
+        emitLoadQwordDisp8(bsReg, 3, 0);
+        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8((uint8_t)(0xC0 + bsReg));
+        freeReg(bsReg);
+        emitAdd(0, 3);
+        emit8(0x48); emit8(0x83); emit8(0xC0); emit8(32);
         int ptrR = allocReg();
         if (ptrR != 0) { emitMovReg(ptrR, 0); freeReg(0); }
-        // nextIdx++: load, inc, store
+        emitJmp(doneLabel);
+
+        emitLabel(seqLabel);
         emitLoadQwordDisp8(0, 3, 16);
-        emit8(0x48); emit8(0xFF); emit8(0xC0); // inc rax
+        int cReg = allocReg();
+        emitLoadQwordDisp8(cReg, 3, 8);
+        emit8(0x48); emit8(0x39); emit8((uint8_t)(0xC0 + cReg));
+        freeReg(cReg);
+        emitJcc(">=", overflowLabel);
+
+        bsReg = allocReg();
+        emitLoadQwordDisp8(bsReg, 3, 0);
+        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8((uint8_t)(0xC0 + bsReg));
+        freeReg(bsReg);
+        emitAdd(0, 3);
+        emit8(0x48); emit8(0x83); emit8(0xC0); emit8(32);
+        ptrR = allocReg();
+        if (ptrR != 0) { emitMovReg(ptrR, 0); freeReg(0); }
+
+        emitLoadQwordDisp8(0, 3, 16);
+        emit8(0x48); emit8(0xFF); emit8(0xC0);
         emitStoreQwordDisp8(0, 3, 16);
-        freeReg(3);
-        // Jump over overflow handler
-        int done = newLabel();
-        emitJmp(done);
-        emitLabel(overflow);
-        // Return 0
+        emitJmp(doneLabel);
+
+        emitLabel(overflowLabel);
         emitMovRegImm(ptrR >= 0 ? ptrR : 0, 0);
-        emitLabel(done);
+
+        emitLabel(doneLabel);
+        freeReg(3);
         regsUsed = (uint8_t)saved;
         reloadRegs();
         int r = allocReg();
@@ -320,36 +341,72 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         return true;
     }
 
-    // poolFree(pool, ptr) -> void (no-op, use poolReset to free all)
+    // poolFree(pool, ptr) -> void
     if (call->name == "poolFree" && call->args.size() == 2) {
-        int r1 = emitExpr(call->args[0].get());
-        int r2 = emitExpr(call->args[1].get());
-        freeReg(r1); freeReg(r2);
-        regsUsed = 1;
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int pReg = emitExpr(call->args[0].get());
+        int ptrReg = emitExpr(call->args[1].get());
+        emit8(0x50 + ptrReg);
+        if (pReg != 3) { emitMovReg(3, pReg); freeReg(pReg); }
+        emit8(0x59); // pop rcx (ptr)
+        emit8(0x48); emit8(0x89); emit8(0xC8); // mov rax, rcx
+        emit8(0x48); emit8(0x29); emit8(0xD8); // sub rax, rbx
+        emit8(0x48); emit8(0x83); emit8(0xE8); emit8(0x20); // sub rax, 32
+        int bsReg = allocReg();
+        emitLoadQwordDisp8(bsReg, 3, 0);
+        emit8(0x48); emit8(0x31); emit8(0xD2); // xor rdx, rdx
+        emit8(0x48); emit8(0xF7); emit8((uint8_t)(0xF0 + bsReg));
+        freeReg(bsReg);
+        emitMovReg(2, 0); // rdx = idx
+        int bsReg2 = allocReg();
+        emitLoadQwordDisp8(bsReg2, 3, 0);
+        emitMovReg(0, 2);
+        emit8(0x48); emit8(0x0F); emit8(0xAF); emit8((uint8_t)(0xC0 + bsReg2));
+        freeReg(bsReg2);
+        emitAdd(0, 3);
+        emit8(0x48); emit8(0x83); emit8(0xC0); emit8(0x20);
+        emitLoadQwordDisp8(1, 3, 24);
+        emitStoreQwordDisp8(1, 0, 0);
+        emitStoreQwordDisp8(2, 3, 24);
+
+        freeReg(3);
+        regsUsed = (uint8_t)saved;
+        reloadRegs();
         emitMovRegImm(0, 0);
         resultReg = 0;
         return true;
     }
 
-    // poolReset(pool) -> void (reset nextIdx to 0, freeing all blocks)
+    // poolReset(pool) -> void
     if (call->name == "poolReset" && call->args.size() == 1) {
         int saved = regsUsed;
         spillRegs();
         regsUsed = 0;
         int p = emitExpr(call->args[0].get());
-        emitMovQwordDisp8Imm32(p, 16, 0);
-        freeReg(p);
-        regsUsed = 1;
+        if (p != 3) { emitMovReg(3, p); freeReg(p); }
+        emitMovQwordDisp8Imm32(3, 16, 0);
+        emitMovQwordDisp8Imm32(3, 24, -1);
+        freeReg(3);
+        regsUsed = (uint8_t)saved;
+        reloadRegs();
         emitMovRegImm(0, 0);
         resultReg = 0;
         return true;
     }
 
-    // poolDestroy(pool) -> void (no-op)
+    // poolDestroy(pool) -> void (free pool block back to heap)
     if (call->name == "poolDestroy" && call->args.size() == 1) {
         int r = emitExpr(call->args[0].get());
-        freeReg(r);
-        regsUsed = 1;
+        if (r != 1) { emitMovReg(1, r); freeReg(r); }
+        regsUsed = 0;
+        emit8(0x48); emit8(0x8D); emit8(0x41); emit8(0xF0); // lea rax, [rcx-16]
+        emit8(0x48); emit8(0x8B); emit8(0x15);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0);
+        emit8(0x48); emit8(0x89); emit8(0x10); // mov [rax], rdx
+        emit8(0x48); emit8(0x89); emit8(0x05);
+        heapFixups.push_back({code.size(), heapFreeHeadRVA}); emit32(0);
         emitMovRegImm(0, 0);
         resultReg = 0;
         return true;
@@ -392,7 +449,7 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
         emit8(0x49); emit8(0x89); emit8(0xC0); // mov r8, rax (save heapArea)
         emit8(0x48); emit8(0x03); emit8(0xCA); // rcx = totalSize + offset = newOffset
-        emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
+        emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024 * 1024);
         int scFail = newLabel();
         emit8(0x0F); emit8(0x87);
         jmpFixups.push_back({code.size(), scFail}); emit32(0);
@@ -1002,36 +1059,134 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         return true;
     }
 
-    // ============== Shared Memory Builtins ==============
-    // peek(addr) — reads a 64-bit value from the given address
-    if (call->name == "peek" && call->args.size() == 1) {
+    // ============== EFI Builtins ==============
+    // efi_image_handle() — returns EFI_HANDLE
+    if (call->name == "efi_image_handle" && call->args.empty()) {
         int saved = regsUsed;
         spillRegs();
         regsUsed = 0;
-        int addrReg = emitExpr(call->args[0].get());
-        if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
-        else freeReg(0);
-        emit8(0x48); emit8(0x8B); emit8(0x00); // mov rax, [rax]
+        emit8(0x48); emit8(0x8B); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA});
+        emit32(0);
         regsUsed = 1;
         resultReg = 0;
         return true;
     }
-    // poke(addr, val) — writes val (64-bit) to the given address
-    if (call->name == "poke" && call->args.size() == 2) {
+
+    // efi_system_table() — returns EFI_SYSTEM_TABLE*
+    if (call->name == "efi_system_table" && call->args.empty()) {
         int saved = regsUsed;
         spillRegs();
         regsUsed = 0;
+        emit8(0x48); emit8(0x8B); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 8});
+        emit32(0);
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // efi_exit(status) — returns status from EfiMain
+    if (call->name == "efi_exit" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int statusReg = emitExpr(call->args[0].get());
+        if (statusReg != 0) { emitMovReg(0, statusReg); freeReg(statusReg); }
+        else freeReg(0);
+        emit8(0xC9);  // leave
+        emit8(0xC3);  // ret
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // efi_print(text) — prints string via EFI SystemTable ConOut->OutputString
+    if (call->name == "efi_print" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int strReg = emitExpr(call->args[0].get());
+        if (strReg != 0) { emitMovReg(0, strReg); freeReg(strReg); }
+        else freeReg(0);
+
+        emit8(0x48); emit8(0x81); emit8(0xEC); emit32(0x220); // sub rsp, 0x220
+        emit8(0x48); emit8(0x89); emit8(0xC6); // mov rsi, rax
+        emit8(0x48); emit8(0x8D); emit8(0x7C); emit8(0x24); emit8(0x20); // lea rdi, [rsp + 0x20]
+        emit8(0x48); emit8(0xC7); emit8(0xC1); emit32(255); // mov rcx, 255
+
+        int loopLabel = newLabel();
+        int endLabel = newLabel();
+        emitLabel(loopLabel);
+        emit8(0x8A); emit8(0x06); // mov al, [rsi]
+        emit8(0x84); emit8(0xC0); // test al, al
+        emitJcc("e", endLabel);
+        emit8(0x66); emit8(0x89); emit8(0x07); // mov [rdi], ax
+        emit8(0x48); emit8(0xFF); emit8(0xC6); // inc rsi
+        emit8(0x48); emit8(0x83); emit8(0xC7); emit8(0x02); // add rdi, 2
+        emit8(0x48); emit8(0xFF); emit8(0xC9); // dec rcx
+        emitJcc("ne", loopLabel);
+
+        emitLabel(endLabel);
+        emit8(0x66); emit8(0xC7); emit8(0x07); emit16(0); // mov word ptr [rdi], 0
+
+        emit8(0x48); emit8(0x8B); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 8});
+        emit32(0); // rax = SystemTable
+
+        emit8(0x48); emit8(0x8B); emit8(0x48); emit8(0x40); // mov rcx, [rax + 0x40] (rcx = ConOut)
+        emit8(0x48); emit8(0x8D); emit8(0x54); emit8(0x24); emit8(0x20); // lea rdx, [rsp + 0x20]
+        emit8(0xFF); emit8(0x51); emit8(0x08); // call qword ptr [rcx + 8] (OutputString)
+
+        emit8(0x48); emit8(0x81); emit8(0xC4); emit32(0x220); // add rsp, 0x220
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // ============== Bare-Metal / VGA Builtins ==============
+    // Note: vga_clear/vga_putc/vga_print are handled by the cursor-aware
+    // implementations in tryEFICall (EFI/Bare) and tryBIOSCall (BIOS).
+
+    // halt() — cli; hlt loop
+    if (call->name == "halt" && call->args.empty()) {
+        emit8(0xFA); // cli
+        emit8(0xF4); // hlt
+        int loopLbl = newLabel();
+        emitLabel(loopLbl);
+        emit8(0xEB); emit8(0xFE); // jmp $
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // outb(port, val)
+    if (call->name == "outb" && call->args.size() == 2) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int portReg = emitExpr(call->args[0].get());
+        emit8(0x50); // push port
         int valReg = emitExpr(call->args[1].get());
-        if (valReg != 0) { emitMovReg(0, valReg); freeReg(valReg); }
+        emit8(0x50); // push val
+        emit8(0x58); // pop rax (val)
+        emit8(0x5A); // pop rdx (port)
+        emit8(0xEE); // out dx, al
+        regsUsed = 1;
+        resultReg = 0;
+        return true;
+    }
+
+    // inb(port)
+    if (call->name == "inb" && call->args.size() == 1) {
+        int saved = regsUsed;
+        spillRegs();
+        regsUsed = 0;
+        int portReg = emitExpr(call->args[0].get());
+        if (portReg != 0) { emitMovReg(2, portReg); freeReg(portReg); }
         else freeReg(0);
-        emit8(0x50);  // push rax (val)
-        int addrReg = emitExpr(call->args[0].get());
-        if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
-        else freeReg(0);
-        emit8(0x50);  // push rax (addr)
-        emit8(0x41); emit8(0x58);  // pop r8 (addr)
-        emit8(0x41); emit8(0x59);  // pop r9 (val)
-        emit8(0x4D); emit8(0x89); emit8(0x08); // mov [r8], r9
+        emit8(0xEC); // in al, dx
+        emit8(0x0F); emit8(0xB6); emit8(0xC0); // movzx eax, al
         regsUsed = 1;
         resultReg = 0;
         return true;

@@ -4,14 +4,15 @@
 #include <cstdint>
 
 enum class TokenKind {
-    Func, Var, Let, If, Else, While, For, Return, End, True, False, Import,
-    Struct, Extern, App, From, Type,
+    Func, Var, Let, Const, If, Else, While, For, Return, End, True, False, Import,
+    Struct, Extern, App, From, Type, Switch, Case, Break, Continue, Loop,
     TypeInt, TypeFloat, TypeBool, TypeString, TypeVoid,
     TypeVec2, TypeVec3, TypeColor, TypeEntity,
+    Virt, Phys, Ptr, Asm, Vide,
     Ident, Number, FloatLit, StringLit,
-    Plus, Minus, Star, Slash, Dot, Bang,
+    Plus, Minus, Star, Slash, Percent, Dot, Bang, Amp,
     Eq, EqEq, NotEq, Lt, Gt, LtEq, GtEq, Arrow,
-    AmpAmp, PipePipe,
+    AmpAmp, PipePipe, Pipe, Caret, ShiftLeft, ShiftRight, Tilde,
     LParen, RParen, LBrace, RBrace, LBrack, RBrack,
     Comma, Colon, At, Newline, Eof, Error
 };

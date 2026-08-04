@@ -1,4 +1,5 @@
-#include "codegen.h"
+﻿#include "codegen.h"
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -228,13 +229,41 @@ void Codegen::emitImul(int dst, int src) {
     else { emit8(0x48); emit8(0x0F); emit8(0xAF); emit8(0xC0 + dst + src * 8); }
 }
 
+int Codegen::emitUnaryExpr(UnaryExpr* u) {
+    if (u->op == "~") {
+        int r = emitExpr(u->operand.get());
+        // NOT r64: 48 F7 /2 (NOT reg) -> F7 /2 (if REX.W not needed, but here we need 64-bit)
+        // NOT instruction: REX.W (0x48) + F7 /2
+        emit8(0x48); emit8(0xF7); emit8(0xD0 + r); 
+        std::cout << "GEN: NOT r" << r << std::endl;
+        return r;
+    }
+    return -1;
+}
+
+void Codegen::emitAnd(int dst, int src) {
+    // and r64, r/m64 (dst &= src)
+    emit8(0x48); emit8(0x23); emit8((uint8_t)(0xC0 + dst * 8 + src));
+    std::cout << "GEN: AND r" << dst << ", r" << src << std::endl;
+}
+
+void Codegen::emitOr(int dst, int src) {
+    // or r64, r/m64 (dst |= src)
+    emit8(0x48); emit8(0x0B); emit8((uint8_t)(0xC0 + dst * 8 + src));
+    std::cout << "GEN: OR r" << dst << ", r" << src << std::endl;
+}
+
+void Codegen::emitXor(int dst, int src) {
+    // xor r64, r/m64 (dst ^= src)
+    emit8(0x48); emit8(0x33); emit8((uint8_t)(0xC0 + dst * 8 + src));
+    std::cout << "GEN: XOR r" << dst << ", r" << src << std::endl;
+}
+
 // ============== SSE Float Instructions ==============
 
 void Codegen::emitMovssXmm(int xmmDst, int xmmSrc) {
     // movss xmmDst, xmmSrc: F3 0F 10 /r (dst = dst reg, src = r/m)
     // We encode: movss xmmDst, xmmSrc (register to register)
-    uint8_t rex = 0x41; // REX prefix for extended registers
-    bool rexNeeded = (xmmDst >= 8) || (xmmSrc >= 8);
     uint8_t modrm = 0xC0 | (xmmDst << 3) | xmmSrc;
     if (xmmDst < 8 && xmmSrc < 8) {
         emit8(0xF3); emit8(0x0F); emit8(0x10); emit8(modrm);
@@ -495,7 +524,7 @@ VarInfo* Codegen::getVarInfo(const std::string& name) {
 
 bool Codegen::isFloatExpr(Expr* expr) {
     if (dynamic_cast<FloatExpr*>(expr)) return true;
-    if (auto n = dynamic_cast<NumberExpr*>(expr)) return false;
+    if (dynamic_cast<NumberExpr*>(expr)) return false;
     if (auto id = dynamic_cast<IdentExpr*>(expr)) {
         auto vi = getVarInfo(id->name);
         return vi && vi->type.kind == TypeKind::Float;
@@ -550,6 +579,14 @@ void Codegen::emitFloatLoadFromBP(int xmm, int offset) {
     }
 }
 
+void Codegen::emitLeaRegFromBP(int r, int offset) {
+    if (offset >= -128 && offset <= 127) {
+        emit8(0x48); emit8(0x8D); emit8((uint8_t)(0x45 | (r << 3))); emit8((uint8_t)(int8_t)offset);
+    } else {
+        emit8(0x48); emit8(0x8D); emit8((uint8_t)(0x85 | (r << 3))); emit32((uint32_t)(int32_t)offset);
+    }
+}
+
 void Codegen::emitLeaR10FromBP(int offset) {
     emit8(0x4C); emit8(0x8D);
     if (offset >= -128 && offset <= 127) {
@@ -573,7 +610,6 @@ void Codegen::emitLoadFromAddr(int gpDst, int addrReg, int offset) {
             else if (gpDst == 3) { emit8(0x48); emit8(0x8B); emit8(0x18 + addrReg); }
         }
     } else if (offset >= -128 && offset <= 127) {
-        uint8_t base = 0x40 | (addrReg & 7);
         uint8_t modrm = 0x40 | ((gpDst & 3) << 3) | (addrReg & 7);
         if (addrReg == 5) { modrm = 0x45 | ((gpDst & 3) << 3); }
         else if (addrReg == 4) { emit8(0x48); emit8(0x8B); emit8(modrm); emit8(0x24); emit8((uint8_t)(int8_t)offset); return; }
@@ -610,6 +646,120 @@ void Codegen::emitStoreToAddr(int gpSrc, int addrReg, int offset) {
         else if (addrReg == 4) { emit8(0x48); emit8(0x89); emit8(modrm); emit8(0x24); emit32((uint32_t)(int32_t)offset); return; }
         emit8(0x48); emit8(0x89); emit8(modrm); emit32((uint32_t)(int32_t)offset);
     }
+}
+
+// ============== User Global Variables (RIP-relative, .data) ==============
+// Each access emits an instruction with a disp32 placeholder and records a
+// GlobalFixup; fixupSectionRVAs/bufPE later patch the displacement using the
+// final globals RVA (like heapFixups).
+
+void Codegen::emitGlobalLoadReg(int r, int offset) {
+    uint8_t modrm = 0x05 | ((r & 3) << 3);  // mod=00, reg=r, rm=101 (RIP+disp32)
+    emit8(0x48); emit8(0x8B); emit8(modrm);
+    globalFixups.push_back({code.size(), globalsRVA + (uint32_t)offset});
+    emit32(0);
+}
+
+void Codegen::emitGlobalLoadReg32(int r, int offset) {
+    uint8_t modrm = 0x05 | ((r & 3) << 3);
+    emit8(0x8B); emit8(modrm);
+    globalFixups.push_back({code.size(), globalsRVA + (uint32_t)offset});
+    emit32(0);
+}
+
+void Codegen::emitGlobalStoreReg64(int offset) {
+    emit8(0x48); emit8(0x89); emit8(0x05);
+    globalFixups.push_back({code.size(), globalsRVA + (uint32_t)offset});
+    emit32(0);
+}
+
+void Codegen::emitGlobalStoreReg32(int offset) {
+    emit8(0x89); emit8(0x05);
+    globalFixups.push_back({code.size(), globalsRVA + (uint32_t)offset});
+    emit32(0);
+}
+
+void Codegen::emitGlobalLeaReg(int r, int offset) {
+    uint8_t modrm = 0x05 | ((r & 3) << 3);
+    emit8(0x48); emit8(0x8D); emit8(modrm);
+    globalFixups.push_back({code.size(), globalsRVA + (uint32_t)offset});
+    emit32(0);
+}
+
+void Codegen::emitGlobalLeaR10(int offset) {
+    emit8(0x4C); emit8(0x8D); emit8(0x15);  // lea r10, [rip+disp32]
+    globalFixups.push_back({code.size(), globalsRVA + (uint32_t)offset});
+    emit32(0);
+}
+
+void Codegen::emitGlobalFloatLoad(int xmm, int offset) {
+    emit8(0xF3); emit8(0x0F); emit8(0x10);
+    emit8(0x05 | ((xmm & 7) << 3));
+    globalFixups.push_back({code.size(), globalsRVA + (uint32_t)offset});
+    emit32(0);
+}
+
+void Codegen::emitGlobalFloatStore(int xmm, int offset) {
+    emit8(0xF3); emit8(0x0F); emit8(0x11);
+    emit8(0x05 | ((xmm & 7) << 3));
+    globalFixups.push_back({code.size(), globalsRVA + (uint32_t)offset});
+    emit32(0);
+}
+
+void Codegen::populateGlobalVarInfos() {
+    for (auto& g : prog.globals) {
+        auto it = globalOffsets.find(g->name);
+        if (it != globalOffsets.end()) {
+            VarInfo vi;
+            vi.offset = it->second;
+            vi.type = g->type;
+            vi.isGlobal = true;
+            varInfos[g->name] = vi;
+        }
+    }
+}
+
+void Codegen::emitGlobalInit() {
+    bool hasInit = false;
+    for (auto& g : prog.globals) {
+        if (g->init) { hasInit = true; break; }
+    }
+    if (!hasInit) return;
+
+    // Minimal stack frame so spill-based builtins (alloc, arena*, pool*, slot*)
+    // that save registers to [rbp - spillBase] work during initialization.
+    emit8(0x55);                       // push rbp
+    emit8(0x48); emit8(0x89); emit8(0xE5);  // mov rbp, rsp
+    emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x20);  // sub rsp, 0x20
+
+    int savedLocals = locals;
+    int savedSpillBase = spillBase;
+    locals = 0;
+    spillBase = 8;
+
+    populateGlobalVarInfos();
+
+    for (auto& g : prog.globals) {
+        if (!g->init) continue;
+        int off = globalOffsets[g->name];
+        if (g->type.kind == TypeKind::Float) {
+            int x = emitFloatExpr(g->init.get());
+            emitGlobalFloatStore(x, off);
+            freeXmmReg(x);
+        } else {
+            int r = emitExpr(g->init.get());
+            if (r != 0) { emitMovReg(0, r); freeReg(r); }
+            emitGlobalStoreReg64(off);
+            freeReg(0);
+        }
+        regsUsed = 0;
+        xmmRegsUsed = 0;
+    }
+
+    emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x20);  // add rsp, 0x20
+    emit8(0x5D);                       // pop rbp
+    locals = savedLocals;
+    spillBase = savedSpillBase;
 }
 
 void Codegen::emitLoadQwordDisp8(int dstReg, int baseReg, int disp) {
@@ -693,7 +843,8 @@ int Codegen::emitFloatExpr(Expr* expr) {
         if (vi) {
             int x = allocXmmReg();
             if (x < 0) x = 0;
-            emitMovssXmmFromBP(x, vi->offset);
+            if (vi->isGlobal) emitGlobalFloatLoad(x, vi->offset);
+            else emitMovssXmmFromBP(x, vi->offset);
             return x;
         }
         int x = allocXmmReg(); if (x < 0) x = 0;
@@ -711,10 +862,29 @@ int Codegen::emitFloatExpr(Expr* expr) {
                     if (fIt != layout.fieldOffsets.end()) {
                         int x = allocXmmReg(); if (x < 0) x = 0;
                         int totalOffset = vi->offset + fIt->second;
-                        emitMovssXmmFromBP(x, totalOffset);
+                        if (vi->isGlobal) emitGlobalFloatLoad(x, totalOffset);
+                        else emitMovssXmmFromBP(x, totalOffset);
                         return x;
                     }
                 }
+            }
+        }
+    }
+    if (auto arr = dynamic_cast<ArrayAccessExpr*>(expr)) {
+        if (auto objId = dynamic_cast<IdentExpr*>(arr->array.get())) {
+            auto vi = getVarInfo(objId->name);
+            if (vi && vi->type.kind == TypeKind::Float) {
+                int x = allocXmmReg(); if (x < 0) x = 0;
+                if (vi->isGlobal) emitGlobalLeaR10(vi->offset);
+                else emitLeaR10FromBP(vi->offset);
+                int idxReg = emitExpr(arr->index.get());
+                if (idxReg != 0) { emitMovReg(0, idxReg); freeReg(idxReg); idxReg = 0; }
+                emit8(0x48); emit8(0x69); emit8(0xC0); emit32(4);
+                emit8(0x49); emit8(0x01); emit8(0xC2);
+                freeReg(0);
+                emit8(0xF3); emit8(0x41); emit8(0x0F); emit8(0x10);
+                emit8((uint8_t)(0x02 | ((x & 7) << 3)));
+                return x;
             }
         }
     }
@@ -723,6 +893,63 @@ int Codegen::emitFloatExpr(Expr* expr) {
     }
     int x = allocXmmReg(); if (x < 0) x = 0;
     emitMovssXmmImm(x, 0.0f);
+    return x;
+}
+
+static bool exprContainsCall(Expr* e) {
+    if (!e) return false;
+    if (dynamic_cast<CallExpr*>(e)) return true;
+    if (auto b = dynamic_cast<BinaryExpr*>(e))
+        return exprContainsCall(b->left.get()) || exprContainsCall(b->right.get());
+    if (auto u = dynamic_cast<UnaryExpr*>(e))
+        return exprContainsCall(u->operand.get());
+    if (auto m = dynamic_cast<MemberExpr*>(e))
+        return exprContainsCall(m->object.get());
+    if (auto a = dynamic_cast<ArrayAccessExpr*>(e))
+        return exprContainsCall(a->array.get()) || exprContainsCall(a->index.get());
+    if (auto d = dynamic_cast<DerefExpr*>(e))
+        return exprContainsCall(d->ptr.get());
+    return false;
+}
+
+int Codegen::emitExprKeepAlive(Expr* expr, int& keepReg) {
+    // Evaluate `expr` while keeping the value held in `keepReg` live across any
+    // calls inside it. Calls clobber all caller-saved registers, so spill keepReg
+    // to the stack first (push + sub rsp,8 keeps 16-byte alignment) and pop it
+    // back into a fresh register afterwards.
+    if (!exprContainsCall(expr)) return emitExpr(expr);
+    emit8(0x50 + keepReg);          // push keepReg
+    emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x08); // sub rsp, 8
+    int result = emitExpr(expr);
+    emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x08); // add rsp, 8
+    int restored = allocReg();
+    if (restored < 0) restored = (result == 0) ? 1 : 0;
+    emit8(0x58 + restored);         // pop restored
+    freeReg(keepReg);
+    regsUsed |= (1 << restored);
+    keepReg = restored;
+    return result;
+}
+
+int Codegen::emitExprKeepAliveR10(Expr* expr) {
+    // Like emitExprKeepAlive, but for the untracked r10 base register used by
+    // indexed assignments: save/restore r10 directly around the evaluation.
+    if (!exprContainsCall(expr)) return emitExpr(expr);
+    emit8(0x41); emit8(0x52);          // push r10
+    emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x08); // sub rsp, 8
+    int result = emitExpr(expr);
+    emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x08); // add rsp, 8
+    emit8(0x41); emit8(0x5A);          // pop r10
+    return result;
+}
+
+int Codegen::emitFloatExprKeepAliveR10(Expr* expr) {
+    if (!exprContainsCall(expr)) return emitFloatExpr(expr);
+    emit8(0x41); emit8(0x52);          // push r10
+    emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x08); // sub rsp, 8
+    int x = emitFloatExpr(expr);
+    emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x08); // add rsp, 8
+    emit8(0x41); emit8(0x5A);          // pop r10
     return x;
 }
 
@@ -817,6 +1044,60 @@ int Codegen::emitBinaryExpr(BinaryExpr* bin, bool isFloat) {
                 freeReg(rightReg);
                 regsUsed = 1; // only RAX live
                 return 0;
+            } else if (bin->op == "%") {
+                // idiv rax by rcx: rax = left, rcx = right, rdx = remainder
+                if (rightReg == 0 && popReg == 1) {
+                    emit8(0x48); emit8(0x87); emit8(0xC1); // xchg rax, rcx
+                } else {
+                    if (rightReg == 0) { emit8(0x50); emit8(0x59); }
+                    else if (rightReg == 1) { emit8(0x51); emit8(0x59); }
+                    else if (rightReg == 2) { emit8(0x52); emit8(0x59); }
+                    else if (rightReg == 3) { emit8(0x53); emit8(0x59); }
+                    else { emit8(0x50); emit8(0x59); }
+                    emitMovReg(0, popReg);
+                }
+                emit8(0x48); emit8(0x99);  // cqo
+                emit8(0x48); emit8(0xF7); emit8(0xF9);  // idiv rcx
+                emit8(0x48); emit8(0x89); emit8(0xD0);  // mov rax, rdx (remainder)
+                freeReg(popReg);
+                freeReg(rightReg);
+                regsUsed = 1; // only RAX live
+                return 0;
+            } else if (bin->op == "&") {
+                emitAnd(popReg, rightReg);
+                freeReg(rightReg);
+                return popReg;
+            } else if (bin->op == "|") {
+                emitOr(popReg, rightReg);
+                freeReg(rightReg);
+                return popReg;
+            } else if (bin->op == "^") {
+                emitXor(popReg, rightReg);
+                freeReg(rightReg);
+                return popReg;
+            } else if (bin->op == "<<" || bin->op == ">>") {
+                // value in popReg, count in rightReg; count must be in CL.
+                // In this path all 4 GPRs are busy, so rcx may hold a live
+                // value that must survive the shift.
+                if (popReg == 1 && rightReg != 1) popReg = (rightReg == 0) ? 2 : 0;
+                bool saveRcx = rightReg != 1;
+                if (saveRcx) emit8(0x51);            // push rcx (save live value)
+                if (rightReg != 1) {
+                    if (rightReg == 0) emit8(0x50);      // push rax (count)
+                    else if (rightReg == 2) emit8(0x52); // push rdx
+                    else emit8(0x53);                    // push rbx
+                    emitMovReg(0, popReg);               // value -> rax
+                    emit8(0x59);                         // pop rcx (count -> cl)
+                } else {
+                    emitMovReg(0, popReg);               // value -> rax
+                }
+                if (bin->op == "<<") { emit8(0x48); emit8(0xD3); emit8(0xE0); } // shl rax, cl
+                else { emit8(0x48); emit8(0xD3); emit8(0xE8); }                 // shr rax, cl
+                if (saveRcx) emit8(0x59);            // pop rcx (restore live value)
+                freeReg(popReg);
+                freeReg(rightReg);
+                regsUsed |= 1;
+                return 0;
             } else if (bin->op == "==" || bin->op == "!=" ||
                        bin->op == "<"  || bin->op == ">"  ||
                        bin->op == "<=" || bin->op == ">=") {
@@ -843,7 +1124,9 @@ int Codegen::emitBinaryExpr(BinaryExpr* bin, bool isFloat) {
         }
         emitMovReg(tempReg, leftReg);
         freeReg(leftReg);
-        int rightReg = emitExpr(bin->right.get());
+        // A call inside the right operand would clobber tempReg, so keep it alive
+        // on the stack across the evaluation.
+        int rightReg = emitExprKeepAlive(bin->right.get(), tempReg);
 
         if (bin->op == "+") {
             emitAdd(rightReg, tempReg);
@@ -874,6 +1157,66 @@ int Codegen::emitBinaryExpr(BinaryExpr* bin, bool isFloat) {
             freeReg(rightReg);
             freeReg(tempReg);
             regsUsed |= 1;  // RAX holds the division result
+            return 0;
+        } else if (bin->op == "%") {
+            bool saveRcx = (regsUsed & 2) != 0 && rightReg != 1;
+            if (saveRcx) emit8(0x51);  // push rcx (save outer value)
+            if (rightReg == 0) emit8(0x50);
+            else if (rightReg == 1) emit8(0x51);
+            else if (rightReg == 2) emit8(0x52);
+            else if (rightReg == 3) emit8(0x53);
+            emitMovReg(0, tempReg);
+            emit8(0x48); emit8(0x99);  // cqo (sign-extend RAX to RDX:RAX, 64-bit)
+            emit8(0x59);  // pop rcx
+            emit8(0x48); emit8(0xF7); emit8(0xF9);  // idiv rcx (64-bit signed divide)
+            emit8(0x48); emit8(0x89); emit8(0xD0);  // mov rax, rdx (remainder)
+            if (saveRcx) emit8(0x59);  // pop rcx (restore outer value)
+            freeReg(rightReg);
+            freeReg(tempReg);
+            regsUsed = 1;  // RAX holds the modulo result
+            return 0;
+        } else if (bin->op == "&") {
+            emitAnd(tempReg, rightReg);
+            freeReg(rightReg);
+            return tempReg;
+        } else if (bin->op == "|") {
+            emitOr(tempReg, rightReg);
+            freeReg(rightReg);
+            return tempReg;
+        } else if (bin->op == "^") {
+            emitXor(tempReg, rightReg);
+            freeReg(rightReg);
+            return tempReg;
+        } else if (bin->op == "<<" || bin->op == ">>") {
+            // value in tempReg, count in rightReg; count must be in CL.
+            bool saveRcx = (regsUsed & 2) != 0 && rightReg != 1;
+            if (tempReg == 1 && rightReg != 1) {
+                // value occupies rcx; move it out before the count is loaded into CL
+                int spare = -1;
+                for (int r = 0; r < 4; r++) {
+                    if (r != 1 && r != rightReg && !(regsUsed & (1 << r))) { spare = r; break; }
+                }
+                if (spare < 0) { emit8(0x50); spare = (rightReg == 0) ? 2 : 0; emit8(0x58 + spare); }
+                emitMovReg(spare, 1);
+                freeReg(1);
+                tempReg = spare;
+            }
+            if (saveRcx) emit8(0x51);  // push rcx (save outer value)
+            if (rightReg != 1) {
+                if (rightReg == 0) emit8(0x50);      // push rax (count)
+                else if (rightReg == 2) emit8(0x52); // push rdx
+                else emit8(0x53);                    // push rbx
+                emitMovReg(0, tempReg);              // value -> rax
+                emit8(0x59);                         // pop rcx (count -> cl)
+            } else {
+                emitMovReg(0, tempReg);              // value -> rax
+            }
+            if (bin->op == "<<") { emit8(0x48); emit8(0xD3); emit8(0xE0); } // shl rax, cl
+            else { emit8(0x48); emit8(0xD3); emit8(0xE8); }                 // shr rax, cl
+            if (saveRcx) emit8(0x59);  // pop rcx (restore outer value)
+            freeReg(rightReg);
+            freeReg(tempReg);
+            regsUsed |= 1;  // RAX holds the shift result
             return 0;
         } else if (bin->op == "==" || bin->op == "!=" ||
                    bin->op == "<"  || bin->op == ">"  ||
@@ -972,9 +1315,8 @@ int Codegen::emitBinaryExpr(BinaryExpr* bin, bool isFloat) {
     }
 }
 
-// ============== Expression codegen ==============
-
 int Codegen::emitExpr(Expr* expr) {
+    if (auto u = dynamic_cast<UnaryExpr*>(expr)) return emitUnaryExpr(u);
     if (auto num = dynamic_cast<NumberExpr*>(expr)) {
         int r = allocReg();
         if (r < 0) {
@@ -998,6 +1340,14 @@ int Codegen::emitExpr(Expr* expr) {
         if (vi) {
             int r = allocReg();
             if (r < 0) r = 0;
+            if (vi->isGlobal) {
+                if (vi->type.kind == TypeKind::Float) {
+                    emitGlobalLoadReg32(r, vi->offset);
+                } else {
+                    emitGlobalLoadReg(r, vi->offset);
+                }
+                return r;
+            }
             if (vi->type.kind == TypeKind::Float) {
                 emitLoadRegFromBP(r, vi->offset);
             } else {
@@ -1041,11 +1391,13 @@ int Codegen::emitExpr(Expr* expr) {
                     int r = allocReg();
                     if (r < 0) r = 0;
                     int totalOffset = vi->offset + fIt->second;
+                    if (vi->isGlobal) { emitGlobalLoadReg32(r, totalOffset); return r; }
                     emitLoadRegFromBP(r, totalOffset);
                     return r;
                 }
                         int r = allocReg();
                         if (r < 0) r = 0;
+                        if (vi->isGlobal) { emitGlobalLoadReg(r, vi->offset + fIt->second); return r; }
                         emitLoadRegFromBP64(r, vi->offset + fIt->second);
                         return r;
                     }
@@ -1066,7 +1418,7 @@ int Codegen::emitExpr(Expr* expr) {
             stringPool.push_back(str->value);
         }
         int r = allocReg(); if (r < 0) r = 0;
-        emit8(0x48);
+        emit8(0x48); emit8(0x8D);
         uint8_t modrm;
         if (r == 0) modrm = 0x05;
         else if (r == 1) modrm = 0x0D;
@@ -1084,7 +1436,8 @@ int Codegen::emitExpr(Expr* expr) {
             auto vi = getVarInfo(objId->name);
             if (vi) {
                 int elementSize = (vi->type.kind == TypeKind::Float) ? 4 : 8;
-                emitLeaR10FromBP(vi->offset);
+                if (vi->isGlobal) emitGlobalLeaR10(vi->offset);
+                else emitLeaR10FromBP(vi->offset);
                 int idxReg = emitExpr(arr->index.get());
                 if (idxReg != 0) { emitMovReg(0, idxReg); freeReg(idxReg); idxReg = 0; }
                 emit8(0x48); emit8(0x69); emit8(0xC0); emit32(elementSize);
@@ -1092,7 +1445,8 @@ int Codegen::emitExpr(Expr* expr) {
                 if (vi->type.kind == TypeKind::Float) {
                     freeReg(0);
                     int x = allocXmmReg(); if (x < 0) x = 0;
-                    emit8(0xF3); emit8(0x41); emit8(0x0F); emit8(0x10); emit8(0x02);
+                    emit8(0xF3); emit8(0x41); emit8(0x0F); emit8(0x10);
+                    emit8((uint8_t)(0x02 | ((x & 7) << 3)));
                     int r = allocReg(); if (r < 0) r = 0;
                     emitCvtss2si(r, x);
                     freeXmmReg(x);
@@ -1128,7 +1482,20 @@ int Codegen::emitExpr(Expr* expr) {
             emit8(0x48); emit8(0xF7); emit8(0xD8 | (r & 7)); // neg reg
             return r;
         }
+        if (unary->op == "~") {
+            int r = emitExpr(unary->operand.get());
+            emit8(0x48); emit8(0xF7); emit8(0xD0 | (r & 7)); // not reg
+            return r;
+        }
         return emitExpr(unary->operand.get());
+    }
+    if (auto addrOf = dynamic_cast<AddressOfExpr*>(expr)) {
+        auto vi = getVarInfo(addrOf->name);
+        int r = allocReg(); if (r < 0) r = 0;
+        if (!vi) { emitMovRegImm(r, 0); return r; }
+        if (vi->isGlobal) emitGlobalLeaReg(r, vi->offset);
+        else emitLeaRegFromBP(r, vi->offset);
+        return r;
     }
     if (auto call = dynamic_cast<CallExpr*>(expr)) {
         if (call->name == "alloc" && call->args.size() == 1) {
@@ -1167,7 +1534,7 @@ int Codegen::emitExpr(Expr* expr) {
             heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
             emit8(0x48); emit8(0x89); emit8(0xD1);  // mov rcx, rdx
             emit8(0x48); emit8(0x01); emit8(0xD9);  // add rcx, rbx
-            emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
+            emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024 * 1024);
             emit8(0x0F); emit8(0x87);
             jmpFixups.push_back({code.size(), failLabel}); emit32(0);
             emit8(0x48); emit8(0x89); emit8(0x0D);
@@ -1213,7 +1580,7 @@ int Codegen::emitExpr(Expr* expr) {
             heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);  // rdx = offset
             emit8(0x49); emit8(0x89); emit8(0xC0); // r8 = rax (save heapArea)
             emit8(0x48); emit8(0x03); emit8(0xCA); // rcx = totalSize + offset = newOffset
-            emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
+            emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024 * 1024);
             int fl = newLabel();
             emit8(0x0F); emit8(0x87); jmpFixups.push_back({code.size(), fl}); emit32(0);
             emit8(0x48); emit8(0x89); emit8(0x0D);
@@ -1483,7 +1850,7 @@ int Codegen::emitExpr(Expr* expr) {
             heapFixups.push_back({code.size(), heapOffsetRVA}); emit32(0);
             emit8(0x49); emit8(0x89); emit8(0xC0); // mov r8, rax (save heapArea)
             emit8(0x48); emit8(0x03); emit8(0xCA); // rcx = totalSize + offset = newOffset
-            emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024);
+            emit8(0x48); emit8(0x81); emit8(0xF9); emit32(64 * 1024 * 1024);
             int scFail = newLabel();
             emit8(0x0F); emit8(0x87);
             jmpFixups.push_back({code.size(), scFail}); emit32(0);
@@ -2112,21 +2479,158 @@ int Codegen::emitExpr(Expr* expr) {
             return 0;
         }
 
+        // ============== Byte-width Memory Access Builtins ==============
+        // peek8(addr) — reads an 8-bit value (zero-extended)
+        if (call->name == "peek8" && call->args.size() == 1) {
+            spillRegs();
+            regsUsed = 0;
+            int addrReg = emitExpr(call->args[0].get());
+            if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
+            else freeReg(0);
+            emit8(0x0F); emit8(0xB6); emit8(0x00); // movzx eax, byte ptr [rax]
+            regsUsed = 1;
+            return 0;
+        }
+        // peek16(addr) — reads a 16-bit value (zero-extended)
+        if (call->name == "peek16" && call->args.size() == 1) {
+            spillRegs();
+            regsUsed = 0;
+            int addrReg = emitExpr(call->args[0].get());
+            if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
+            else freeReg(0);
+            emit8(0x0F); emit8(0xB7); emit8(0x00); // movzx eax, word ptr [rax]
+            regsUsed = 1;
+            return 0;
+        }
+        // peek32(addr) — reads a 32-bit value (zero-extended)
+        if (call->name == "peek32" && call->args.size() == 1) {
+            spillRegs();
+            regsUsed = 0;
+            int addrReg = emitExpr(call->args[0].get());
+            if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
+            else freeReg(0);
+            emit8(0x8B); emit8(0x00); // mov eax, [rax]
+            regsUsed = 1;
+            return 0;
+        }
+        // poke8(addr, val) — writes val (low 8 bits) to the given address
+        if (call->name == "poke8" && call->args.size() == 2) {
+            spillRegs();
+            regsUsed = 0;
+            int valReg = emitExpr(call->args[1].get());
+            if (valReg != 0) { emitMovReg(0, valReg); freeReg(valReg); }
+            else freeReg(0);
+            emit8(0x50);  // push rax (val)
+            int addrReg = emitExpr(call->args[0].get());
+            if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
+            else freeReg(0);
+            emit8(0x5A);  // pop rdx (val)
+            emit8(0x88); emit8(0x10); // mov [rax], dl
+            regsUsed = 1;
+            return 0;
+        }
+        // poke16(addr, val) — writes val (low 16 bits) to the given address
+        if (call->name == "poke16" && call->args.size() == 2) {
+            spillRegs();
+            regsUsed = 0;
+            int valReg = emitExpr(call->args[1].get());
+            if (valReg != 0) { emitMovReg(0, valReg); freeReg(valReg); }
+            else freeReg(0);
+            emit8(0x50);  // push rax (val)
+            int addrReg = emitExpr(call->args[0].get());
+            if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
+            else freeReg(0);
+            emit8(0x5A);  // pop rdx (val)
+            emit8(0x66); emit8(0x89); emit8(0x10); // mov [rax], dx
+            regsUsed = 1;
+            return 0;
+        }
+        // poke32(addr, val) — writes val (low 32 bits) to the given address
+        if (call->name == "poke32" && call->args.size() == 2) {
+            spillRegs();
+            regsUsed = 0;
+            int valReg = emitExpr(call->args[1].get());
+            if (valReg != 0) { emitMovReg(0, valReg); freeReg(valReg); }
+            else freeReg(0);
+            emit8(0x50);  // push rax (val)
+            int addrReg = emitExpr(call->args[0].get());
+            if (addrReg != 0) { emitMovReg(0, addrReg); freeReg(addrReg); }
+            else freeReg(0);
+            emit8(0x5A);  // pop rdx (val)
+            emit8(0x89); emit8(0x10); // mov [rax], edx
+            regsUsed = 1;
+            return 0;
+        }
+
         // ============== GUI Built-in Functions ==============
         if (prog.appType == AppType::GUI) {
             int guiResult;
             if (tryGUICall(call, guiResult)) return guiResult;
         }
 
+        // ============== DX11 Shader Built-in Functions ==============
+        if (prog.renderType == RenderType::DX11) {
+            int dxResult;
+            if (tryDX11Call(call, dxResult)) return dxResult;
+        }
 
-        int savedRegs = regsUsed;
-        int savedXmmRegs = xmmRegsUsed;
+        // ============== Shared builtins (EFI/Bare): efi_print, efi_exit, halt, inb/outb ==============
+        // Tried BEFORE tryEFICall so the argument-evaluating implementations win over the
+        // duplicate (and previously unreachable) ones in the EFI-specific handler.
+        // vga_clear/vga_putc/vga_print are handled by the cursor-aware versions in
+        // tryEFICall (EFI/Bare) and tryBIOSCall (BIOS).
+        if (prog.appType == AppType::EFI || prog.appType == AppType::Bare) {
+            int builtinResult;
+            if (tryBuiltinCall(call, builtinResult)) return builtinResult;
+        }
+
+        // ============== EFI / Bare-metal Built-in Functions ==============
+        if (prog.appType == AppType::EFI || prog.appType == AppType::Bare) {
+            int efiResult;
+            if (tryEFICall(call, efiResult)) return efiResult;
+        }
+
+        // ============== BIOS Built-in Functions ==============
+        if (prog.appType == AppType::BIOS) {
+            int biosResult;
+            if (tryBIOSCall(call, biosResult)) return biosResult;
+        }
+
         regsUsed = 0;
         xmmRegsUsed = 0;
 
-        // Count stack args (args beyond first 4 go on stack)
-        int totalArgs = (int)call->args.size();
-        int stackSlots = totalArgs > 4 ? totalArgs - 4 : 0;
+        // Arguments are placed into 8-byte "slots". A struct passed by value
+        // occupies ceil(totalSize/8) consecutive slots (its memory is copied
+        // verbatim, qword by qword), so the caller and callee agree on layout.
+        auto structArgInfo = [&](Expr* e, bool& isStruct, bool& isGlobal,
+                                 int& offset, int& slots) -> bool {
+            isStruct = false; isGlobal = false; slots = 1;
+            if (auto id = dynamic_cast<IdentExpr*>(e)) {
+                auto sv = getVarInfo(id->name);
+                if (sv && sv->type.kind == TypeKind::Struct) {
+                    auto slIt = structLayouts.find(sv->type.structName);
+                    if (slIt != structLayouts.end()) {
+                        isStruct = true;
+                        isGlobal = sv->isGlobal;
+                        offset = sv->offset;
+                        slots = (int)((slIt->second.totalSize + 7) / 8);
+                        if (slots < 1) slots = 1;
+                    }
+                }
+            }
+            return isStruct;
+        };
+
+        int totalSlots = 0;
+        for (size_t i = 0; i < call->args.size(); i++) {
+            int span = 1;
+            if (!isFloatExpr(call->args[i].get())) {
+                bool isS, isG; int so; int ss;
+                if (structArgInfo(call->args[i].get(), isS, isG, so, ss)) span = ss;
+            }
+            totalSlots += span;
+        }
+        int stackSlots = totalSlots > 4 ? totalSlots - 4 : 0;
         int stackAlloc = 0x20 + stackSlots * 8;
         stackAlloc = (stackAlloc + 15) & ~15;
         if (stackAlloc <= 127) {
@@ -2135,84 +2639,164 @@ int Codegen::emitExpr(Expr* expr) {
             emit8(0x48); emit8(0x81); emit8(0xEC); emit32((uint32_t)stackAlloc);
         }
 
-        int intArgCount = 0;
-        int floatArgCount = 0;
+        int argIndex = 0;
+        uint8_t placedGP = 0;   // bit s = slot s (<4) holds a staged int arg in GP reg s
+        uint8_t placedXmm = 0;  // bit s = slot s (<4) holds a staged float arg in XMM reg s
+
+        // If a later argument contains a call, that call clobbers all caller-saved
+        // registers (rcx/rdx/r8/r9/xmm0-3), so already-staged register args must be
+        // spilled to the stack across its evaluation. A final pad keeps rsp 16-byte
+        // aligned at the nested call site.
+        auto spillPlacedArgs = [&](uint8_t gp, uint8_t xmm) {
+            int nPushed = 0;
+            for (int s = 0; s < 4; s++) {
+                if (gp & (1 << s)) {
+                    if (s == 0) emit8(0x51);                      // push rcx
+                    else if (s == 1) emit8(0x52);                 // push rdx
+                    else if (s == 2) { emit8(0x41); emit8(0x50); } // push r8
+                    else { emit8(0x41); emit8(0x51); }            // push r9
+                    nPushed++;
+                }
+            }
+            for (int s = 0; s < 4; s++) {
+                if (xmm & (1 << s)) {
+                    emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x08); // sub rsp, 8
+                    emit8(0xF3); emit8(0x0F); emit8(0x11);
+                    emit8((uint8_t)(0x04 | (s << 3))); emit8(0x24);     // movss [rsp], xmms
+                    nPushed++;
+                }
+            }
+            if (nPushed & 1) {
+                emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x08); // pad
+            }
+        };
+        auto restorePlacedArgs = [&](uint8_t gp, uint8_t xmm) {
+            int nPushed = 0;
+            for (int s = 0; s < 4; s++) {
+                if (gp & (1 << s)) nPushed++;
+                if (xmm & (1 << s)) nPushed++;
+            }
+            if (nPushed & 1) {
+                emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x08); // remove pad
+            }
+            for (int s = 3; s >= 0; s--) {
+                if (xmm & (1 << s)) {
+                    emit8(0xF3); emit8(0x0F); emit8(0x10);
+                    emit8((uint8_t)(0x04 | (s << 3))); emit8(0x24);     // movss xmms, [rsp]
+                    emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x08);
+                }
+            }
+            for (int s = 3; s >= 0; s--) {
+                if (gp & (1 << s)) {
+                    if (s == 0) emit8(0x59);                      // pop rcx
+                    else if (s == 1) emit8(0x5A);                 // pop rdx
+                    else if (s == 2) { emit8(0x41); emit8(0x58); } // pop r8
+                    else { emit8(0x41); emit8(0x59); }            // pop r9
+                }
+            }
+            if (gp) regsUsed |= gp;
+            if (xmm) xmmRegsUsed |= xmm;
+        };
+
+        // Place a 64-bit value (already in valueReg) into argument slot `slot`.
+        auto placeQwordIntoSlot = [&](int slot, int valueReg) {
+            if (slot == 0) {
+                if (valueReg != 1) { emitMovReg(1, valueReg); freeReg(valueReg); }
+                regsUsed |= (1 << 1);
+                placedGP |= (1 << 0);
+            } else if (slot == 1) {
+                if (valueReg != 2) { emitMovReg(2, valueReg); freeReg(valueReg); }
+                regsUsed |= (1 << 2);
+                placedGP |= (1 << 1);
+            } else if (slot == 2) {
+                if (valueReg == 0) {
+                    emit8(0x49); emit8(0x89); emit8(0xC0);  // MOV R8, RAX
+                } else if (valueReg == 1) {
+                    emit8(0x49); emit8(0x89); emit8(0xC8);  // MOV R8, RCX
+                } else if (valueReg == 2) {
+                    emit8(0x49); emit8(0x89); emit8(0xD0);  // MOV R8, RDX
+                } else if (valueReg == 3) {
+                    emit8(0x49); emit8(0x89); emit8(0xD8);  // MOV R8, RBX
+                } else {
+                    emitMovReg(0, valueReg);
+                    emit8(0x49); emit8(0x89); emit8(0xC0);  // MOV R8, RAX
+                }
+                freeReg(valueReg);
+                placedGP |= (1 << 2);
+            } else if (slot == 3) {
+                if (valueReg == 0) {
+                    emit8(0x49); emit8(0x89); emit8(0xC1);  // MOV R9, RAX
+                } else if (valueReg == 1) {
+                    emit8(0x49); emit8(0x89); emit8(0xC9);  // MOV R9, RCX
+                } else if (valueReg == 2) {
+                    emit8(0x49); emit8(0x89); emit8(0xD1);  // MOV R9, RDX
+                } else if (valueReg == 3) {
+                    emit8(0x49); emit8(0x89); emit8(0xD9);  // MOV R9, RBX
+                } else {
+                    emitMovReg(0, valueReg);
+                    emit8(0x49); emit8(0x89); emit8(0xC1);  // MOV R9, RAX
+                }
+                freeReg(valueReg);
+                placedGP |= (1 << 3);
+            } else {
+                int stackOff = 0x20 + (slot - 4) * 8;
+                if (valueReg != 0) { emitMovReg(0, valueReg); freeReg(valueReg); }
+                if (stackOff < 128) {
+                    emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8((uint8_t)stackOff);
+                } else {
+                    emit8(0x48); emit8(0x89); emit8(0x84); emit8(0x24); emit32((uint32_t)stackOff);
+                }
+            }
+        };
 
         for (size_t i = 0; i < call->args.size(); i++) {
             bool isFloatArg = isFloatExpr(call->args[i].get());
-            if (isFloatArg) {
-                if (floatArgCount < 4) {
-                    int xmmIdx = floatArgCount;
+            bool riskyArg = exprContainsCall(call->args[i].get());
+            bool isS = false, sGlobal = false;
+            int sOffset = 0, sSlots = 1;
+            if (!isFloatArg) structArgInfo(call->args[i].get(), isS, sGlobal, sOffset, sSlots);
+            int span = isS ? sSlots : 1;
+
+            // Snapshot the staged args BEFORE evaluation; restore must use the same
+            // set, since the current arg's own slots are placed after the spill.
+            uint8_t savedGP = placedGP;
+            uint8_t savedXmm = placedXmm;
+            if (riskyArg && (savedGP | savedXmm)) spillPlacedArgs(savedGP, savedXmm);
+
+            if (isS) {
+                for (int k = 0; k < sSlots; k++) {
+                    int r = allocReg(); if (r < 0) r = 0;
+                    if (sGlobal) emitGlobalLoadReg(r, sOffset + k * 8);
+                    else emitLoadRegFromBP64(r, sOffset + k * 8);
+                    placeQwordIntoSlot(argIndex + k, r);
+                }
+            } else if (isFloatArg) {
+                if (argIndex < 4) {
+                    int xmmIdx = argIndex;
                     int x = emitFloatExpr(call->args[i].get());
                     if (x != xmmIdx) {
                         emitMovssXmm(xmmIdx, x);
                         freeXmmReg(x);
                     }
-                    floatArgCount++;
+                    placedXmm |= (uint8_t)(1 << xmmIdx);
+                    xmmRegsUsed |= (uint8_t)(1 << xmmIdx);
                 } else {
-                    int stackOff = 0x20 + (floatArgCount - 4) * 8;
+                    int stackOff = 0x20 + (argIndex - 4) * 8;
                     int x = emitFloatExpr(call->args[i].get());
-                    emitMovssXmmToMem(x, 4, 0);
-                    emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x04);
                     if (stackOff < 128) {
-                        emit8(0xF3); emit8(0x0F); emit8(0x10); emit8(0x44); emit8(0x24); emit8((uint8_t)(stackOff - 4));
+                        emit8(0xF3); emit8(0x0F); emit8(0x11); emit8(0x44); emit8(0x24); emit8((uint8_t)stackOff);
                     } else {
-                        emit8(0xF3); emit8(0x0F); emit8(0x10); emit8(0x84); emit8(0x24); emit32((uint32_t)(stackOff - 4));
+                        emit8(0xF3); emit8(0x0F); emit8(0x11); emit8(0x84); emit8(0x24); emit32((uint32_t)stackOff);
                     }
-                    emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x04);
                     freeXmmReg(x);
-                    floatArgCount++;
                 }
             } else {
                 int argReg = emitExpr(call->args[i].get());
-                if (intArgCount < 4) {
-                    if (intArgCount == 0) {
-                        if (argReg != 1) { emitMovReg(1, argReg); freeReg(argReg); }
-                        regsUsed |= (1 << 1);
-                    } else if (intArgCount == 1) {
-                        if (argReg != 2) { emitMovReg(2, argReg); freeReg(argReg); }
-                        regsUsed |= (1 << 2);
-                    } else if (intArgCount == 2) {
-                        if (argReg == 0) {
-                            emit8(0x49); emit8(0x89); emit8(0xC0);  // MOV R8, RAX
-                        } else if (argReg == 1) {
-                            emit8(0x49); emit8(0x89); emit8(0xC8);  // MOV R8, RCX
-                        } else if (argReg == 2) {
-                            emit8(0x49); emit8(0x89); emit8(0xD0);  // MOV R8, RDX
-                        } else if (argReg == 3) {
-                            emit8(0x49); emit8(0x89); emit8(0xD8);  // MOV R8, RBX
-                        } else {
-                            emitMovReg(0, argReg);
-                            emit8(0x49); emit8(0x89); emit8(0xC0);  // MOV R8, RAX
-                        }
-                        freeReg(argReg);
-                    } else if (intArgCount == 3) {
-                        if (argReg == 0) {
-                            emit8(0x49); emit8(0x89); emit8(0xC1);  // MOV R9, RAX
-                        } else if (argReg == 1) {
-                            emit8(0x49); emit8(0x89); emit8(0xC9);  // MOV R9, RCX
-                        } else if (argReg == 2) {
-                            emit8(0x49); emit8(0x89); emit8(0xD1);  // MOV R9, RDX
-                        } else if (argReg == 3) {
-                            emit8(0x49); emit8(0x89); emit8(0xD9);  // MOV R9, RBX
-                        } else {
-                            emitMovReg(0, argReg);
-                            emit8(0x49); emit8(0x89); emit8(0xC1);  // MOV R9, RAX
-                        }
-                        freeReg(argReg);
-                    }
-                    intArgCount++;
-                } else {
-                    int stackOff = 0x20 + (intArgCount - 4) * 8;
-                    if (argReg != 0) { emitMovReg(0, argReg); freeReg(argReg); }
-                    if (stackOff < 128) {
-                        emit8(0x48); emit8(0x89); emit8(0x44); emit8(0x24); emit8((uint8_t)stackOff);
-                    } else {
-                        emit8(0x48); emit8(0x89); emit8(0x84); emit8(0x24); emit32((uint32_t)stackOff);
-                    }
-                    intArgCount++;
-                }
+                placeQwordIntoSlot(argIndex, argReg);
             }
+
+            if (riskyArg && (savedGP | savedXmm)) restorePlacedArgs(savedGP, savedXmm);
+            argIndex += span;
         }
 
         bool isImportCall = false;
@@ -2256,6 +2840,13 @@ int Codegen::emitExpr(Expr* expr) {
         xmmRegsUsed = 0;
         return 0;
     }
+    if (auto deref = dynamic_cast<DerefExpr*>(expr)) {
+        int r = emitExpr(deref->ptr.get());
+        if (r != 0) { emitMovReg(0, r); freeReg(r); } else freeReg(0);
+        emit8(0x48); emit8(0x8B); emit8(0x00); // mov rax, [rax]
+        regsUsed = 1;
+        return 0;
+    }
 
     int r = allocReg(); if (r < 0) r = 0;
     emitMovRegImm(r, 0);
@@ -2263,6 +2854,7 @@ int Codegen::emitExpr(Expr* expr) {
 }
 
 void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
+    (void)stmtType;
     if (auto ret = dynamic_cast<ReturnStmt*>(stmt)) {
         if (ret->value) {
             int r = emitExpr(ret->value.get());
@@ -2293,18 +2885,20 @@ void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
                 int elementSize = 4;
                 if (vi->type.kind == TypeKind::Float) elementSize = 4;
                 else elementSize = 8;
-                emitLeaR10FromBP(vi->offset);
-                int idxReg = emitExpr(assign->indexExpr.get());
+                if (vi->isGlobal) emitGlobalLeaR10(vi->offset);
+                else emitLeaR10FromBP(vi->offset);
+                int idxReg = emitExprKeepAliveR10(assign->indexExpr.get());
                 if (idxReg != 0) { emitMovReg(0, idxReg); freeReg(idxReg); idxReg = 0; }
                 emit8(0x48); emit8(0x69); emit8(0xC0); emit32(elementSize);
                 emit8(0x49); emit8(0x01); emit8(0xC2);
                 freeReg(0);
                 if (vi->type.kind == TypeKind::Float) {
-                    int x = emitFloatExpr(assign->value.get());
-                    emit8(0xF3); emit8(0x41); emit8(0x0F); emit8(0x11); emit8(0x02);
+                    int x = emitFloatExprKeepAliveR10(assign->value.get());
+                    emit8(0xF3); emit8(0x41); emit8(0x0F); emit8(0x11);
+                    emit8((uint8_t)(0x02 | ((x & 7) << 3)));
                     freeXmmReg(x);
                 } else {
-                    int r = emitExpr(assign->value.get());
+                    int r = emitExprKeepAliveR10(assign->value.get());
                     if (r != 0) emitMovReg(0, r);
                     emit8(0x49); emit8(0x89); emit8(0x02);
                     freeReg(r);
@@ -2324,12 +2918,14 @@ void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
                         bool isFloatField = fTypeIt != layout.fieldTypes.end() && fTypeIt->second.kind == TypeKind::Float;
                         if (isFloatField) {
                             int x = emitFloatExpr(assign->value.get());
-                            emitFloatStoreToBP(x, totalOffset);
+                            if (vi->isGlobal) emitGlobalFloatStore(x, totalOffset);
+                            else emitFloatStoreToBP(x, totalOffset);
                             freeXmmReg(x);
                         } else {
                             int r = emitExpr(assign->value.get());
                             if (r != 0) { emitMovReg(0, r); freeReg(r); }
-                            emitStoreToBP64(totalOffset);
+                            if (vi->isGlobal) emitGlobalStoreReg64(totalOffset);
+                            else emitStoreToBP64(totalOffset);
                             freeReg(0);
                         }
                     }
@@ -2339,12 +2935,14 @@ void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
             auto vi = getVarInfo(assign->name);
             if (vi && vi->type.kind == TypeKind::Float) {
                 int x = emitFloatExpr(assign->value.get());
-                emitFloatStoreToBP(x, vi->offset);
+                if (vi->isGlobal) emitGlobalFloatStore(x, vi->offset);
+                else emitFloatStoreToBP(x, vi->offset);
                 freeXmmReg(x);
             } else if (vi) {
                 int r = emitExpr(assign->value.get());
                 if (r != 0) { emitMovReg(0, r); freeReg(r); }
-                emitStoreToBP64(vi->offset);
+                if (vi->isGlobal) emitGlobalStoreReg64(vi->offset);
+                else emitStoreToBP64(vi->offset);
                 freeReg(0);
             } else {
                 fprintf(stderr, "Error: undefined variable '%s'\n", assign->name.c_str());
@@ -2399,11 +2997,73 @@ void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
         emit8(0x0F); emit8(0x84);
         jmpFixups.push_back({code.size(), endLabel});
         emit32(0);
+        breakLabelStack.push_back(endLabel);
+        continueLabelStack.push_back(loopLabel);
         for (auto& s : whileStmt->body.stmts) emitStmt(s.get());
+        continueLabelStack.pop_back();
+        breakLabelStack.pop_back();
         emitJmp(loopLabel);
         emitLabel(endLabel);
+    } else if (auto loopStmt = dynamic_cast<LoopStmt*>(stmt)) {
+        int loopLabel = newLabel();
+        int endLabel = newLabel();
+        emitLabel(loopLabel);
+        breakLabelStack.push_back(endLabel);
+        continueLabelStack.push_back(loopLabel);
+        for (auto& s : loopStmt->body.stmts) emitStmt(s.get());
+        continueLabelStack.pop_back();
+        breakLabelStack.pop_back();
+        emitJmp(loopLabel);
+        emitLabel(endLabel);
+    } else if (auto switchStmt = dynamic_cast<SwitchStmt*>(stmt)) {
+        int endLabel = newLabel();
+        breakLabelStack.push_back(endLabel);
+        int condReg = emitExpr(switchStmt->condition.get());
+        if (condReg != 0) { emitMovReg(0, condReg); freeReg(condReg); condReg = 0; }
+        int defaultLabel = newLabel();
+        bool hasDefault = false;
+        std::vector<int> caseLabels;
+        for (size_t i = 0; i < switchStmt->cases.size(); i++) {
+            if (switchStmt->cases[i].condition) caseLabels.push_back(newLabel());
+            else hasDefault = true;
+        }
+        size_t cIdx = 0;
+        for (size_t i = 0; i < switchStmt->cases.size(); i++) {
+            auto& sc = switchStmt->cases[i];
+            if (sc.condition) {
+                int v = emitExpr(sc.condition.get());
+                emit8(0x48); emit8(0x39); emit8((uint8_t)(0xC0 + (v & 7) * 8 + 0));
+                freeReg(v);
+                emitJcc("==", caseLabels[cIdx]);
+                cIdx++;
+            } else {
+                emitJmp(defaultLabel);
+            }
+        }
+        emitJmp(endLabel);
+        cIdx = 0;
+        for (size_t i = 0; i < switchStmt->cases.size(); i++) {
+            auto& sc = switchStmt->cases[i];
+            if (sc.condition) {
+                emitLabel(caseLabels[cIdx]);
+                cIdx++;
+            } else {
+                emitLabel(defaultLabel);
+            }
+            for (auto& s : sc.body.stmts) emitStmt(s.get());
+            emitJmp(endLabel);
+        }
+        if (!hasDefault) emitLabel(defaultLabel);
+        emitLabel(endLabel);
+        breakLabelStack.pop_back();
+        freeReg(condReg);
+    } else if (dynamic_cast<BreakStmt*>(stmt)) {
+        if (!breakLabelStack.empty()) emitJmp(breakLabelStack.back());
+    } else if (dynamic_cast<ContinueStmt*>(stmt)) {
+        if (!continueLabelStack.empty()) emitJmp(continueLabelStack.back());
     } else if (auto forStmt = dynamic_cast<ForStmt*>(stmt)) {
         int loopLabel = newLabel();
+        int continueLabel = newLabel();
         int endLabel = newLabel();
 
         int startReg = emitExpr(forStmt->start.get());
@@ -2423,7 +3083,7 @@ void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
 
         int varReg = allocReg(); if (varReg < 0) varReg = 0;
         emitLoadRegFromBP64(varReg, varInfos[forStmt->varName].offset);
-        int endReg = emitExpr(forStmt->end.get());
+        int endReg = emitExprKeepAlive(forStmt->end.get(), varReg);
         emit8(0x48); emit8(0x39); emit8((uint8_t)(0xC0 + endReg * 8 + varReg));
         freeReg(endReg);
         if (countdown) {
@@ -2435,12 +3095,17 @@ void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
         emit32(0);
         freeReg(varReg);
 
+        breakLabelStack.push_back(endLabel);
+        continueLabelStack.push_back(continueLabel);
         for (auto& s : forStmt->body.stmts) emitStmt(s.get());
+        continueLabelStack.pop_back();
+        breakLabelStack.pop_back();
+        emitLabel(continueLabel);
 
         int curReg = allocReg(); if (curReg < 0) curReg = 0;
         emitLoadRegFromBP64(curReg, varInfos[forStmt->varName].offset);
         if (forStmt->step) {
-            int stepReg = emitExpr(forStmt->step.get());
+            int stepReg = emitExprKeepAlive(forStmt->step.get(), curReg);
             emitAdd(curReg, stepReg);
             freeReg(stepReg);
         } else {
@@ -2452,7 +3117,290 @@ void Codegen::emitStmt(Stmt* stmt, const Type* stmtType) {
 
         emitJmp(loopLabel);
         emitLabel(endLabel);
+    } else if (auto ptrAssign = dynamic_cast<PtrAssignStmt*>(stmt)) {
+        spillRegs();
+        regsUsed = 0;
+        int v = emitExpr(ptrAssign->value.get());
+        if (v != 0) { emitMovReg(0, v); freeReg(v); } else freeReg(0);
+        emit8(0x50); // push rax (value)
+        int p = emitExpr(ptrAssign->ptr.get());
+        if (p != 0) { emitMovReg(0, p); freeReg(p); } else freeReg(0);
+        emit8(0x5A); // pop rdx
+        emit8(0x48); emit8(0x89); emit8(0x10); // mov [rax], rdx
+        regsUsed = 0;
+    } else if (auto asmStmt = dynamic_cast<AsmStmt*>(stmt)) {
+        for (auto& instr : asmStmt->instrs) emitAsmInstr(instr);
     }
+}
+
+int Codegen::asmRegIndex(const std::string& name) const {
+    std::string n = name;
+    for (auto& c : n) c = (char)tolower((unsigned char)c);
+    static const char* names64[16] = {"rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15"};
+    static const char* names32[16] = {"eax","ecx","edx","ebx","esp","ebp","esi","edi","r8d","r9d","r10d","r11d","r12d","r13d","r14d","r15d"};
+    static const char* names16[16] = {"ax","cx","dx","bx","sp","bp","si","di","r8w","r9w","r10w","r11w","r12w","r13w","r14w","r15w"};
+    static const char* names8[16] = {"al","cl","dl","bl","spl","bpl","sil","dil","r8b","r9b","r10b","r11b","r12b","r13b","r14b","r15b"};
+    for (int i = 0; i < 16; i++) { if (n == names64[i]) return i; }
+    for (int i = 0; i < 16; i++) { if (n == names32[i]) return i; }
+    for (int i = 0; i < 16; i++) { if (n == names16[i]) return i; }
+    for (int i = 0; i < 16; i++) { if (n == names8[i]) return i; }
+    return -1;
+}
+
+void Codegen::emitAsmInstr(const AsmInstr& instr) {
+    struct AsmOp { int type = 0; int reg = 0; int base = 0; int64_t disp = 0; };
+    auto trimStr = [](std::string& s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+        while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+    };
+    auto parseNum = [&](const std::string& s) -> int64_t {
+        std::string t = s;
+        trimStr(t);
+        bool neg = false;
+        if (!t.empty() && t[0] == '-') { neg = true; t.erase(t.begin()); }
+        int64_t val = 0;
+        try {
+            if (t.size() >= 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X'))
+                val = std::stoll(t.substr(2), nullptr, 16);
+            else
+                val = std::stoll(t, nullptr, 10);
+        } catch (...) { val = 0; }
+        return neg ? -val : val;
+    };
+    auto parseOp = [&](const std::string& raw) -> AsmOp {
+        std::string s = raw;
+        trimStr(s);
+        AsmOp op;
+        if (s.empty()) return op;
+        if (s[0] == '[') {
+            op.type = 3;
+            std::string inner = s;
+            if (inner.size() >= 2 && inner.back() == ']') inner = inner.substr(1, inner.size() - 2);
+            size_t plus = inner.find('+');
+            size_t minus = inner.find('-');
+            std::string baseStr, dispStr;
+            if (plus != std::string::npos) { baseStr = inner.substr(0, plus); dispStr = inner.substr(plus + 1); }
+            else if (minus != std::string::npos) { baseStr = inner.substr(0, minus); dispStr = inner.substr(minus); }
+            else { baseStr = inner; }
+            trimStr(baseStr); trimStr(dispStr);
+            op.base = asmRegIndex(baseStr);
+            if (op.base < 0) op.base = 0;
+            if (!dispStr.empty()) op.disp = parseNum(dispStr);
+            return op;
+        }
+        int ri = asmRegIndex(s);
+        if (ri >= 0) { op.type = 1; op.reg = ri; return op; }
+        if (s.size() >= 3 && (s[0] == 'c' || s[0] == 'C') && (s[1] == 'r' || s[1] == 'R')) {
+            try { op.type = 4; op.reg = std::stoi(s.substr(2)); return op; } catch (...) {}
+        }
+        op.type = 2;
+        op.disp = parseNum(s);
+        return op;
+    };
+
+    AsmOp o1 = parseOp(instr.op1);
+    AsmOp o2 = parseOp(instr.op2);
+    std::string m = instr.mnemonic;
+    for (auto& c : m) c = (char)tolower((unsigned char)c);
+
+    auto rex = [&](bool w, bool r, bool x, bool b) {
+        emit8((uint8_t)(0x40 | (w ? 8 : 0) | (r ? 4 : 0) | (x ? 2 : 0) | (b ? 1 : 0)));
+    };
+    auto modrm = [&](int mod, int reg, int rm) {
+        emit8((uint8_t)(((mod & 3) << 6) | ((reg & 7) << 3) | (rm & 7)));
+    };
+    auto unsupported = [&](const char* what) {
+        fprintf(stderr, "Warning: asm: unsupported instruction '%s', skipped\n", what);
+    };
+
+    if (m == "mov") {
+        if (o1.type == 1 && o2.type == 1) {
+            rex(true, o2.reg >= 8, false, o1.reg >= 8);
+            emit8(0x89); modrm(3, o2.reg, o1.reg);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 2) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8((uint8_t)(0xB8 + (o1.reg & 7)));
+            emit64((uint64_t)o2.disp);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 3) {
+            rex(true, o1.reg >= 8, false, o2.base >= 8);
+            emit8(0x8B); modrm(2, o1.reg, o2.base);
+            emit32((uint32_t)o2.disp);
+            return;
+        }
+        if (o1.type == 3 && o2.type == 1) {
+            rex(true, o2.reg >= 8, false, o1.base >= 8);
+            emit8(0x89); modrm(2, o2.reg, o1.base);
+            emit32((uint32_t)o1.disp);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 4) {
+            rex(true, o2.reg >= 8, false, o1.reg >= 8);
+            emit8(0x0F); emit8(0x20); modrm(3, o2.reg, o1.reg);
+            return;
+        }
+        if (o1.type == 4 && o2.type == 1) {
+            rex(true, o1.reg >= 8, false, o2.reg >= 8);
+            emit8(0x0F); emit8(0x22); modrm(3, o1.reg, o2.reg);
+            return;
+        }
+        unsupported("mov");
+        return;
+    }
+
+    int arithOp = -1;
+    if (m == "add") arithOp = 0;
+    else if (m == "or") arithOp = 1;
+    else if (m == "and") arithOp = 4;
+    else if (m == "sub") arithOp = 5;
+    else if (m == "xor") arithOp = 6;
+    if (arithOp >= 0) {
+        static const uint8_t arithOpcodes[8] = {0x01, 0x09, 0x00, 0x00, 0x21, 0x29, 0x31, 0x00};
+        if (o1.type == 1 && o2.type == 1) {
+            rex(true, o2.reg >= 8, false, o1.reg >= 8);
+            emit8(arithOpcodes[arithOp]); modrm(3, o2.reg, o1.reg);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 2) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(0x81); modrm(3, arithOp, o1.reg);
+            emit32((uint32_t)o2.disp);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    if (m == "test") {
+        if (o1.type == 1 && o2.type == 1) {
+            rex(true, o2.reg >= 8, false, o1.reg >= 8);
+            emit8(0x85); modrm(3, o2.reg, o1.reg);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 2) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(0xF7); modrm(3, 0, o1.reg);
+            emit32((uint32_t)o2.disp);
+            return;
+        }
+        unsupported("test");
+        return;
+    }
+
+    if (m == "not" || m == "neg" || m == "inc" || m == "dec") {
+        bool group3 = (m == "not" || m == "neg");
+        int d = (m == "not") ? 2 : (m == "neg") ? 3 : (m == "inc") ? 0 : 1;
+        if (o1.type == 1) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(group3 ? 0xF7 : 0xFF); modrm(3, d, o1.reg);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    if (m == "shl" || m == "shr") {
+        int d = (m == "shl") ? 4 : 5;
+        if (o1.type == 1 && o2.type == 1 && o2.reg == 1) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(0xD3); modrm(3, d, o1.reg);
+            return;
+        }
+        if (o1.type == 1 && o2.type == 2) {
+            rex(true, false, false, o1.reg >= 8);
+            emit8(0xC1); modrm(3, d, o1.reg);
+            emit8((uint8_t)o2.disp);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    if (m == "push" || m == "pop") {
+        if (o1.type == 1) {
+            if (o1.reg >= 8) emit8(0x41);
+            emit8((uint8_t)((m == "push" ? 0x50 : 0x58) + (o1.reg & 7)));
+            return;
+        }
+        if (m == "push" && o1.type == 2) {
+            emit8(0x68);
+            emit32((uint32_t)o1.disp);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    if (m == "jmp") {
+        int64_t rel = o1.disp - (int64_t)(code.size() + 5);
+        emit8(0xE9);
+        emit32((uint32_t)rel);
+        return;
+    }
+    static const struct { const char* name; int cc; } jccTable[] = {
+        {"je",0x84},{"jz",0x84},{"jne",0x85},{"jnz",0x85},{"jb",0x82},{"jbe",0x86},{"ja",0x87},{"jae",0x83},
+        {"jl",0x8C},{"jle",0x8E},{"jg",0x8F},{"jge",0x8D},{"js",0x88},{"jns",0x89}
+    };
+    for (auto& j : jccTable) {
+        if (m == j.name) {
+            int64_t rel = o1.disp - (int64_t)(code.size() + 6);
+            emit8(0x0F);
+            emit8((uint8_t)(0x80 | j.cc));
+            emit32((uint32_t)rel);
+            return;
+        }
+    }
+
+    if (m == "cli") { emit8(0xFA); return; }
+    if (m == "sti") { emit8(0xFB); return; }
+    if (m == "hlt") { emit8(0xF4); return; }
+    if (m == "nop") { emit8(0x90); return; }
+    if (m == "ret") { emit8(0xC3); return; }
+    if (m == "leave") { emit8(0xC9); return; }
+    if (m == "iret" || m == "iretq") { emit8(0xCF); return; }
+    if (m == "syscall") { emit8(0x0F); emit8(0x05); return; }
+    if (m == "cpuid") { emit8(0x0F); emit8(0xA2); return; }
+    if (m == "wrmsr") { emit8(0x0F); emit8(0x30); return; }
+    if (m == "rdmsr") { emit8(0x0F); emit8(0x32); return; }
+    if (m == "cqo" || m == "cqd") { emit8(0x48); emit8(0x99); return; }
+
+    if (m == "int") {
+        if (o1.type == 2) { emit8(0xCD); emit8((uint8_t)o1.disp); return; }
+        unsupported("int");
+        return;
+    }
+    if (m == "in") {
+        if (o1.type == 1 && o1.reg == 0 && o2.type == 2) {
+            emit8(0x48); emit8(0xE5); emit8((uint8_t)o2.disp);
+            return;
+        }
+        unsupported("in");
+        return;
+    }
+    if (m == "out") {
+        if (o1.type == 2 && o2.type == 1 && o2.reg == 0) {
+            emit8(0x48); emit8(0xE7); emit8((uint8_t)o1.disp);
+            return;
+        }
+        unsupported("out");
+        return;
+    }
+    if (m == "lgdt" || m == "lidt") {
+        int d = (m == "lgdt") ? 2 : 3;
+        if (o1.type == 3) {
+            rex(false, false, false, o1.base >= 8);
+            emit8(0x0F); emit8(0x01); modrm(2, d, o1.base);
+            emit32((uint32_t)o1.disp);
+            return;
+        }
+        unsupported(m.c_str());
+        return;
+    }
+
+    unsupported(m.c_str());
 }
 
 void Codegen::computeStructLayouts() {
@@ -2528,6 +3476,12 @@ void Codegen::allocateBlockVars(const Block& block) {
             allocateBlockVars(ifStmt->elseBlock);
         } else if (auto whileStmt = dynamic_cast<WhileStmt*>(stmt.get())) {
             allocateBlockVars(whileStmt->body);
+        } else if (auto loopStmt = dynamic_cast<LoopStmt*>(stmt.get())) {
+            allocateBlockVars(loopStmt->body);
+        } else if (auto switchStmt = dynamic_cast<SwitchStmt*>(stmt.get())) {
+            for (auto& sc : switchStmt->cases) {
+                allocateBlockVars(sc.body);
+            }
         }
     }
 }
@@ -2537,12 +3491,24 @@ void Codegen::emitFunction(FunctionDecl* func) {
     varInfos.clear();
     locals = 0;
 
+    populateGlobalVarInfos();
+
+    int paramSlot = 0;
     for (size_t i = 0; i < func->params.size(); i++) {
-        int off = (int)(24 + i * 8);
+        int off = (int)(24 + paramSlot * 8);
         VarInfo vi;
         vi.offset = off;
         vi.type = func->params[i].type;
         varInfos[func->params[i].name] = vi;
+        int slots = 1;
+        if (func->params[i].type.kind == TypeKind::Struct) {
+            auto it = structLayouts.find(func->params[i].type.structName);
+            if (it != structLayouts.end()) {
+                slots = (int)((it->second.totalSize + 7) / 8);
+                if (slots < 1) slots = 1;
+            }
+        }
+        paramSlot += slots;
     }
 
     allocateBlockVars(func->body);
@@ -2566,17 +3532,31 @@ void Codegen::emitFunction(FunctionDecl* func) {
         }
     }
 
-    for (size_t i = 0; i < func->params.size() && i < 4; i++) {
-        int off = (int)(24 + i * 8);
-        if (i == 0) {
-            emit8(0x48); emit8(0x89); emit8(0x4D); emit8((uint8_t)(int8_t)off);
-        } else if (i == 1) {
-            emit8(0x48); emit8(0x89); emit8(0x55); emit8((uint8_t)(int8_t)off);
-        } else if (i == 2) {
-            emit8(0x4C); emit8(0x89); emit8(0x45); emit8((uint8_t)(int8_t)off);
-        } else if (i == 3) {
-            emit8(0x4C); emit8(0x89); emit8(0x4D); emit8((uint8_t)(int8_t)off);
+    paramSlot = 0;
+    for (size_t i = 0; i < func->params.size(); i++) {
+        int slots = 1;
+        if (func->params[i].type.kind == TypeKind::Struct) {
+            auto it = structLayouts.find(func->params[i].type.structName);
+            if (it != structLayouts.end()) {
+                slots = (int)((it->second.totalSize + 7) / 8);
+                if (slots < 1) slots = 1;
+            }
         }
+        for (int k = 0; k < slots; k++) {
+            int slot = paramSlot + k;
+            if (slot >= 4) break;  // stack slots are already in place
+            int off = (int)(24 + slot * 8);
+            if (slot == 0) {
+                emit8(0x48); emit8(0x89); emit8(0x4D); emit8((uint8_t)(int8_t)off);
+            } else if (slot == 1) {
+                emit8(0x48); emit8(0x89); emit8(0x55); emit8((uint8_t)(int8_t)off);
+            } else if (slot == 2) {
+                emit8(0x4C); emit8(0x89); emit8(0x45); emit8((uint8_t)(int8_t)off);
+            } else if (slot == 3) {
+                emit8(0x4C); emit8(0x89); emit8(0x4D); emit8((uint8_t)(int8_t)off);
+            }
+        }
+        paramSlot += slots;
     }
 
     for (auto& stmt : func->body.stmts) {
@@ -2600,6 +3580,15 @@ void Codegen::emitFunction(FunctionDecl* func) {
 void Codegen::emitEntryPoint() {
     entryPointCodeOffset = code.size();
 
+    if (prog.appType == AppType::Bare) {
+        entryPointCodeOffset = code.size();
+        bool hm = funcOffsets.count("main") > 0;
+        if (hm) { emit8(0xE8); size_t fp=code.size(); emit32(0); callFixups.push_back({fp,"main"}); }
+        else if (!prog.functions.empty()) { emit8(0xE8); size_t fp=code.size(); emit32(0); callFixups.push_back({fp,prog.functions[0]->name}); }
+        int l = newLabel(); emitLabel(l); emit8(0xF4); emit8(0xEB); emit8(0xFC);
+        return;
+    }
+
     if (prog.appType == AppType::EFI) {
         // EFI entry point: EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         // rcx = ImageHandle, rdx = SystemTable
@@ -2607,6 +3596,17 @@ void Codegen::emitEntryPoint() {
         emit8(0x55);  // push rbp
         emit8(0x48); emit8(0x89); emit8(0xE5);  // mov rbp, rsp
         emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x20);  // sub rsp, 0x20 (shadow space)
+
+        // Store ImageHandle -> win32Globals, SystemTable -> win32Globals+8
+        // so the efi_* builtins (efi_print, efi_system_table, ...) can find them.
+        emit8(0x48); emit8(0x89); emit8(0x0D);  // mov [rip+disp], rcx
+        heapFixups.push_back({code.size(), win32GlobalsRVA});
+        emit32(0);
+        emit8(0x48); emit8(0x89); emit8(0x15);  // mov [rip+disp], rdx
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 8});
+        emit32(0);
+
+        emitGlobalInit();
 
         bool hasMain = funcOffsets.count("main") > 0;
         if (hasMain) {
@@ -2637,6 +3637,8 @@ void Codegen::emitEntryPoint() {
         // (entry rsp has 8 mod 16 from OS call; sub 0x28 → rsp 0 mod 16 for calling main)
         emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x28);
     }
+
+    emitGlobalInit();
 
     bool hasMain = funcOffsets.count("main") > 0;
 
@@ -2717,9 +3719,10 @@ void Codegen::generateWide(const std::wstring& outputPath) {
     collectStrings();
     computeSectionRVAs();
 
-    if (prog.appType != AppType::EFI) {
-        buildImportData();
-    }
+    // buildImportData builds .rdata/.data layouts (string pool, win32 globals, heap state).
+    // It is required for ALL app types — EFI and Bare also reference the string pool and
+    // win32 globals (efi_print/vga_print), which previously stayed at RVA 0 (garbage).
+    buildImportData();
 
     if (prog.appType == AppType::GUI) {
         emitWndProc();
@@ -2765,6 +3768,14 @@ void Codegen::generateWide(const std::wstring& outputPath) {
         int ulen = WideCharToMultiByte(0 /*CP_ACP*/, 0, outputPath.c_str(), -1, NULL, 0, NULL, NULL);
         std::string narrowOut(ulen > 0 ? ulen - 1 : 0, '\0');
         if (ulen > 1) WideCharToMultiByte(0 /*CP_ACP*/, 0, outputPath.c_str(), -1, &narrowOut[0], ulen, NULL, NULL);
-        buildPE(narrowOut);
+        if (prog.appType == AppType::Bare) {
+            std::ofstream rf(narrowOut, std::ios::binary);
+            rf.write((const char*)code.data(), code.size());
+            rf.write((const char*)kZenithMagic, 6);
+            rf.close();
+            std::cout << "Compiled raw: " << narrowOut << " (" << code.size() << " B)\n";
+        } else {
+            buildPE(narrowOut);
+        }
     }
 }

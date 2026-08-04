@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include "ast.h"
 #include "parser.h"
+#include "font5x7.h"
 #include <iostream>
 #include <fstream>
 #include <cstring>
@@ -153,6 +154,14 @@ void Codegen::collectStmtStrings(Stmt* stmt) {
     } else if (auto wh = dynamic_cast<WhileStmt*>(stmt)) {
         collectExprStrings(wh->condition.get());
         for (auto& s : wh->body.stmts) collectStmtStrings(s.get());
+    } else if (auto loop = dynamic_cast<LoopStmt*>(stmt)) {
+        for (auto& s : loop->body.stmts) collectStmtStrings(s.get());
+    } else if (auto sw = dynamic_cast<SwitchStmt*>(stmt)) {
+        collectExprStrings(sw->condition.get());
+        for (auto& sc : sw->cases) {
+            collectExprStrings(sc.condition.get());
+            for (auto& s : sc.body.stmts) collectStmtStrings(s.get());
+        }
     } else if (auto fs = dynamic_cast<ForStmt*>(stmt)) {
         collectExprStrings(fs->start.get());
         collectExprStrings(fs->end.get());
@@ -168,6 +177,11 @@ void Codegen::collectStrings() {
         }
     }
 
+    // Strings used in global variable initializers
+    for (auto& g : prog.globals) {
+        if (g->init) collectExprStrings(g->init.get());
+    }
+
     // Pre-add DX11 IID bytes to stringPool so they have valid stringOffsets
     if (prog.renderType == RenderType::DX11) {
         std::string iidBytes(16, '\0');
@@ -178,6 +192,15 @@ void Codegen::collectStrings() {
         bool found = false;
         for (auto& s : stringPool) { if (s == iidBytes) { found = true; break; } }
         if (!found) stringPool.push_back(iidBytes);
+
+        // Shader builtins add strings to stringPool at codegen time (after
+        // stringOffsets is built). Pre-add them here so stringOffsets stay valid.
+        static const char* dxShaderStrings[] = { "main", "vs_5_0", "ps_5_0", "POSITION" };
+        for (const char* s : dxShaderStrings) {
+            bool strFound = false;
+            for (auto& p : stringPool) { if (p == s) { strFound = true; break; } }
+            if (!strFound) stringPool.push_back(s);
+        }
     }
 }
 
@@ -238,13 +261,13 @@ uint32_t Codegen::estimateRdataSize() {
     if (!isEfi) {
         uint32_t dllCount = 0;
         std::unordered_map<std::string, std::vector<std::string>> dllFuncMap;
-        dllFuncMap["kernel32.dll"] = {"ExitProcess", "GetStdHandle", "WriteFile", "GetModuleHandleA", "Sleep"};
+        dllFuncMap["kernel32.dll"] = {"ExitProcess", "GetStdHandle", "WriteFile", "GetModuleHandleA", "Sleep", "GetTickCount", "Beep"};
         if (prog.appType == AppType::GUI) {
             dllFuncMap["kernel32.dll"].push_back("AddVectoredExceptionHandler");
             dllFuncMap["user32.dll"] = {"CreateWindowExA", "DefWindowProcA", "RegisterClassExA",
                 "DestroyWindow", "GetDC", "ReleaseDC", "PeekMessageA", "TranslateMessage",
                 "DispatchMessageA", "GetAsyncKeyState", "PostQuitMessage", "BeginPaint",
-                "EndPaint", "GetMessageA"};
+                "EndPaint", "GetMessageA", "LoadCursorA"};
             if (prog.renderType == RenderType::DX11) {
                 dllFuncMap["d3d11.dll"] = {"D3D11CreateDeviceAndSwapChain", "D3D11CreateDevice"};
             } else {
@@ -264,7 +287,8 @@ uint32_t Codegen::estimateRdataSize() {
                         fn.find("RegisterClass") == 0 || fn.find("DestroyWindow") == 0 ||
                         fn.find("GetDC") == 0 || fn.find("PeekMessageA") == 0 ||
                         fn.find("TranslateMessage") == 0 || fn.find("DispatchMessageA") == 0 ||
-                        fn.find("GetAsyncKeyState") == 0 || fn.find("PostQuitMessage") == 0) return "user32.dll";
+                        fn.find("GetAsyncKeyState") == 0 || fn.find("PostQuitMessage") == 0 ||
+                        fn.find("LoadCursorA") == 0) return "user32.dll";
                     if (fn.find("CreateDIBSection") == 0 || fn.find("BitBlt") == 0 ||
                         fn.find("SelectObject") == 0 || fn.find("DeleteObject") == 0 ||
                         fn.find("CreateCompatibleDC") == 0) return "gdi32.dll";
@@ -300,6 +324,8 @@ uint32_t Codegen::estimateRdataSize() {
     // Class name
     if (prog.appType == AppType::GUI) {
         total += 10; // "ZenithWnd\0"
+        total = (total + 15) & ~15;
+        total += 95 * 7; // 5x7 font blob
         total = (total + 15) & ~15;
     }
 
@@ -385,7 +411,7 @@ void Codegen::fixupSectionRVAs() {
 
     // 1. Fix import descriptors in .rdata
     // Each descriptor: [ILT RVA(4)][timestamp(4)][fwd(4)][Name RVA(4)][IAT RVA(4)]
-    if (prog.appType != AppType::EFI) {
+    if (prog.appType != AppType::EFI && prog.appType != AppType::Bare) {
         for (uint32_t i = 0; i < importDescCount; i++) {
             size_t base = i * 20;
             uint32_t ilt = rdDW(rdata, base);
@@ -421,15 +447,27 @@ void Codegen::fixupSectionRVAs() {
         }
     }
 
+    // 4b. Fix user global fixups target RVAs (globals live in .data)
+    for (auto& gf : globalFixups) {
+        if (gf.targetRVA >= oldDataRVA && gf.targetRVA <= oldDataRVA + dataSize) {
+            gf.targetRVA += dData;
+        }
+    }
+    if (globalsSize > 0) {
+        globalsRVA += dData;
+    }
+
     // 5. Fix scalar RVAs
     stringRVA += dRdata;
     if (prog.appType == AppType::GUI) {
         classNameRVA += dRdata;
+        fontRVA += dRdata;
     }
     heapOffsetRVA += dData;
     heapFreeHeadRVA += dData;
     heapAreaRVA += dData;
-    if (prog.appType == AppType::GUI) {
+    randSeedRVA += dData;
+    if (prog.appType == AppType::GUI || prog.appType == AppType::EFI) {
         win32GlobalsRVA += dData;
     }
 
@@ -445,6 +483,16 @@ void Codegen::fixupSectionRVAs() {
         for (auto& pRVA : emb.funcPtrRVAs) pRVA += dData;
     }
 
+    // 5c. Fix embedded loader lea/mov RIP-relative displacements in emitted code
+    // These were computed at emit time using old (unadjusted) RVAs.
+    // Since .text doesn't move, each displacement needs +dRdata or +dData.
+    for (auto& elf : embeddedLEAFixups) {
+        int32_t oldDisp = (int32_t)rdDW(code, elf.codePos);
+        int32_t adjustment = elf.isRdata ? (int32_t)dRdata : (int32_t)dData;
+        int32_t newDisp = oldDisp + adjustment;
+        wrDW(code, elf.codePos, (uint32_t)newDisp);
+    }
+
     // 6. Update section RVAs
     rdataRVA = newRdataRVA;
     dataRVA = newDataRVA;
@@ -457,8 +505,9 @@ static std::vector<std::string> parseDllExports(const std::vector<uint8_t>& byte
     if (bytes.size() < 64) return result;
     if (bytes[0] != 'M' || bytes[1] != 'Z') return result;
 
-    uint32_t peOff = *(uint32_t*)&bytes[0x3C];
-    if (peOff + 24 >= bytes.size()) return result;
+    uint32_t peOff;
+    memcpy(&peOff, &bytes[0x3C], sizeof(peOff));
+    if (static_cast<size_t>(peOff) + 24 >= bytes.size()) return result;
     if (bytes[peOff] != 'P' || bytes[peOff+1] != 'E') return result;
 
     uint16_t numSections = *(uint16_t*)&bytes[peOff + 6];
@@ -466,6 +515,7 @@ static std::vector<std::string> parseDllExports(const std::vector<uint8_t>& byte
     uint32_t optStart = peOff + 24;
 
     uint32_t exportRVA = 0, exportSize = 0;
+    (void)exportSize;
     if (optStart + 116 <= bytes.size()) {
         exportRVA = *(uint32_t*)&bytes[optStart + 112];
         exportSize = *(uint32_t*)&bytes[optStart + 116];
@@ -544,6 +594,7 @@ void Codegen::readEmbeddedLibs() {
             neededDLLs.insert("libs_mutex.dll");
             neededDLLs.insert("libs_async.dll");
             neededDLLs.insert("libs_threadpool.dll");
+            neededDLLs.insert("libs_network.dll");
             hasEmbeddedImports = true;
         }
     }
@@ -557,6 +608,17 @@ void Codegen::readEmbeddedLibs() {
                 hasEmbeddedImports = true;
             }
         }
+    }
+
+    // Expand transitive dependencies: libs_async.dll and libs_threadpool.dll
+    // import libs_thread.dll + libs_mutex.dll (same mapping as buildImportData)
+    if (neededDLLs.count("libs_async.dll")) {
+        neededDLLs.insert("libs_thread.dll");
+        neededDLLs.insert("libs_mutex.dll");
+    }
+    if (neededDLLs.count("libs_threadpool.dll")) {
+        neededDLLs.insert("libs_thread.dll");
+        neededDLLs.insert("libs_mutex.dll");
     }
 
     if (!hasEmbeddedImports) return;
@@ -669,6 +731,20 @@ void Codegen::readEmbeddedLibs() {
         foundDLLs.insert(dll);
         std::cout << "Embedded: " << dll << " (" << size << " bytes)" << std::endl;
     }
+
+    // Reorder embedded DLLs so dependencies are written+loaded before dependents.
+    // libs_async.dll / libs_threadpool.dll import libs_thread.dll + libs_mutex.dll,
+    // so thread/mutex must be LoadLibrary'd first (Windows resolves DLL imports
+    // against already-loaded modules).
+    auto depRank = [](const std::string& n) -> int {
+        if (n == "libs_thread.dll" || n == "libs_mutex.dll") return 0;
+        if (n == "libs_async.dll" || n == "libs_threadpool.dll") return 1;
+        return 2;
+    };
+    std::stable_sort(embeddedDLLs.begin(), embeddedDLLs.end(),
+        [&](const EmbeddedDLL& a, const EmbeddedDLL& b) {
+            return depRank(a.dllName) < depRank(b.dllName);
+        });
 }
 
 // ============== Import Data Builder ==============
@@ -725,7 +801,9 @@ void Codegen::buildImportData() {
             funcName.find("PeekMessageA") == 0 || funcName.find("TranslateMessage") == 0 ||
             funcName.find("DispatchMessageA") == 0 || funcName.find("GetAsyncKeyState") == 0 ||
             funcName.find("PostQuitMessage") == 0 || funcName.find("BeginPaint") == 0 ||
-            funcName.find("EndPaint") == 0 ||
+            funcName.find("EndPaint") == 0 || funcName.find("LoadCursorA") == 0 ||
+            funcName.find("MessageBoxA") == 0 || funcName.find("MessageBoxW") == 0 ||
+            funcName.find("MessageBox") == 0 ||
             funcName.find("CreateWindowEx") == 0 || funcName.find("DefWindowProc") == 0 ||
             funcName.find("RegisterClass") == 0) {
             return "user32.dll";
@@ -744,6 +822,9 @@ void Codegen::buildImportData() {
             funcName.find("promise") == 0 || funcName.find("Promise") == 0) return "libs_async.dll";
         if (funcName.find("pool") == 0 || funcName.find("Pool") == 0 ||
             funcName.find("PoolWorker") == 0) return "libs_threadpool.dll";
+        if (funcName.find("net_") == 0 || funcName.find("tcp_") == 0 ||
+            funcName.find("udp_") == 0 || funcName == "htons" ||
+            funcName == "ip4" || funcName == "make_sockaddr_in") return "libs_network.dll";
 
         return "kernel32.dll";
     };
@@ -755,6 +836,8 @@ void Codegen::buildImportData() {
     dllFuncMap["kernel32.dll"].push_back("ReadFile");
     dllFuncMap["kernel32.dll"].push_back("GetModuleHandleA");
     dllFuncMap["kernel32.dll"].push_back("Sleep");
+    dllFuncMap["kernel32.dll"].push_back("GetTickCount");
+    dllFuncMap["kernel32.dll"].push_back("Beep");
 
     // GUI apps: register Vectored Exception Handler to suppress D3D11/DXGI cleanup exceptions
     if (prog.appType == AppType::GUI) {
@@ -779,11 +862,14 @@ void Codegen::buildImportData() {
         dllFuncMap["user32.dll"].push_back("GetMessageA");
         dllFuncMap["user32.dll"].push_back("ShowWindow");
         dllFuncMap["user32.dll"].push_back("UpdateWindow");
+        dllFuncMap["user32.dll"].push_back("LoadCursorA");
 
         if (prog.renderType == RenderType::DX11) {
             // DX11 mode: import d3d11.dll for D3D11CreateDeviceAndSwapChain
             dllFuncMap["d3d11.dll"].push_back("D3D11CreateDeviceAndSwapChain");
             dllFuncMap["d3d11.dll"].push_back("D3D11CreateDevice");
+            // Shader compilation via D3DCompile from the standalone D3D compiler DLL
+            dllFuncMap["d3dcompiler_47.dll"].push_back("D3DCompile");
         } else {
             // Software mode: GDI functions
             dllFuncMap["gdi32.dll"].push_back("CreateDIBSection");
@@ -863,6 +949,7 @@ void Codegen::buildImportData() {
             ensureDll("libs_mutex.dll");
             ensureDll("libs_async.dll");
             ensureDll("libs_threadpool.dll");
+            ensureDll("libs_network.dll");
         } else {
             // Direct DLL import: @import("libs_thread.dll") or any other
             if (dllFuncMap.find(imp.dllName) == dllFuncMap.end()) {
@@ -937,6 +1024,7 @@ void Codegen::buildImportData() {
 
     importDescCount = (uint32_t)dllFuncMap.size();
     uint32_t descRVA = rdataRVA;
+    (void)descRVA;
 
     for (auto& [dll, funcs] : dllFuncMap) {
         DLLBuild db;
@@ -960,6 +1048,7 @@ void Codegen::buildImportData() {
         for (auto& fn : db.funcs) hintsTotal += (uint32_t)(2 + fn.size() + 1);
     }
     uint32_t hintsPadded = (hintsTotal + 7) & ~7;
+    (void)hintsPadded;
 
     // Compute name RVAs
     std::vector<uint32_t> nameRVAs;
@@ -1059,6 +1148,16 @@ void Codegen::buildImportData() {
         while (newRdata.size() % 16 != 0) newRdata.push_back(0);
     }
 
+    // 5x7 font blob (GUI only) — 95 glyphs * 7 rows, used by drawText()
+    if (prog.appType == AppType::GUI) {
+        fontRVA = rdataRVA + (uint32_t)newRdata.size();
+        for (int g = 0; g < 95; g++) {
+            for (int r = 0; r < 7; r++)
+                newRdata.push_back(font5x7[g][r]);
+        }
+        while (newRdata.size() % 16 != 0) newRdata.push_back(0);
+    }
+
     rdata = std::move(newRdata);
 
     // === EMBEDDED DLL: rdata entries (DLL path strings, function name strings) ===
@@ -1095,6 +1194,11 @@ void Codegen::buildImportData() {
             // Software globals: 56 bytes
             for (int k = 0; k < 56; k++) data.push_back(0);
         }
+    } else if (prog.appType == AppType::EFI) {
+        // EFI globals: ImageHandle (8) + SystemTable (8)
+        // Populated by the EFI entry point from the EfiMain parameters.
+        win32GlobalsRVA = dataRVA + (uint32_t)data.size();
+        for (int k = 0; k < 16; k++) data.push_back(0);
     }
 
     // === EMBEDDED DLL: .data entries ===
@@ -1114,7 +1218,7 @@ void Codegen::buildImportData() {
             while (data.size() % 8 != 0) data.push_back(0);
 
             emb.funcPtrRVAs.clear();
-            for (auto& fn : emb.funcs) {
+            for (auto& _ : emb.funcs) {
                 uint32_t slotRVA = dataRVA + (uint32_t)data.size();
                 emb.funcPtrRVAs.push_back(slotRVA);
                 for (int k = 0; k < 8; k++) data.push_back(0);
@@ -1134,6 +1238,9 @@ void Codegen::buildImportData() {
     // Heap free list head (8 bytes in .data) — 0 = no free blocks
     heapFreeHeadRVA = dataRVA + (uint32_t)data.size();
     for (int k = 0; k < 8; k++) data.push_back(0);
+    // Random seed (8 bytes in .data) — LCG state for rand() (GUI game apps)
+    randSeedRVA = dataRVA + (uint32_t)data.size();
+    for (int k = 0; k < 8; k++) data.push_back(0);
     // Heap area RVA — points to .bss (zero-init at runtime, no file space)
     heapAreaRVA = dataRVA + (uint32_t)data.size();
 
@@ -1142,6 +1249,39 @@ void Codegen::buildImportData() {
         if (hf.targetRVA == 0xFFFFFF00) hf.targetRVA = heapAreaRVA;
         else if (hf.targetRVA == 0xFFFFFE00) hf.targetRVA = heapFreeHeadRVA;
         else if (hf.targetRVA == 0xFFFFFD00) hf.targetRVA = heapOffsetRVA;
+    }
+
+    // User global variables: allocate zero-initialized slots in .data.
+    // Every slot is a multiple of 8 bytes so 64-bit loads never read neighbors.
+    if (!prog.globals.empty()) {
+        globalOffsets.clear();
+        int totalSize = 0;
+        for (auto& g : prog.globals) {
+            int fieldSize = 8;
+            if (g->arraySize > 0) {
+                int elemSize = (g->type.kind == TypeKind::Float) ? 4 : 8;
+                fieldSize = elemSize * g->arraySize;
+            } else if (g->type.kind == TypeKind::Struct) {
+                auto it = structLayouts.find(g->type.structName);
+                if (it != structLayouts.end()) fieldSize = it->second.totalSize;
+            } else if (g->type.kind == TypeKind::Bool) {
+                fieldSize = 4;
+            } else if (g->type.kind == TypeKind::Float) {
+                fieldSize = 4;
+            } else if (g->type.kind == TypeKind::Vec2) {
+                fieldSize = 8;
+            } else if (g->type.kind == TypeKind::Vec3) {
+                fieldSize = 12;
+            } else if (g->type.kind == TypeKind::Color) {
+                fieldSize = 16;
+            }
+            if (fieldSize % 8 != 0) fieldSize += 8 - (fieldSize % 8);
+            globalOffsets[g->name] = totalSize;
+            totalSize += fieldSize;
+        }
+        globalsSize = totalSize;
+        globalsRVA = dataRVA + (uint32_t)data.size();
+        for (int k = 0; k < globalsSize; k++) data.push_back(0);
     }
 }
 
@@ -1173,6 +1313,8 @@ void Codegen::buildPE(const std::string& outputPath) {
             code[icf.codePos + 1] = (uint8_t)((disp >> 8) & 0xFF);
             code[icf.codePos + 2] = (uint8_t)((disp >> 16) & 0xFF);
             code[icf.codePos + 3] = (uint8_t)((disp >> 24) & 0xFF);
+        } else {
+            std::cerr << "Error: import call fixup not found in externFuncMap: '" << icf.funcName << "'\n";
         }
     }
 
@@ -1186,6 +1328,21 @@ void Codegen::buildPE(const std::string& outputPath) {
         code[sf.codePos + 3] = (uint8_t)((disp >> 24) & 0xFF);
     }
 
+    // Heap area resides in .bss (zero bytes on disk, zero-initialized in memory).
+    // Snap heapAreaRVA to .bss start and adjust fixups BEFORE patching code bytes.
+    uint32_t rawDataEnd = dataRVA + (uint32_t)data.size();
+    uint32_t bssSize = 64 * 1024 * 1024;
+    uint32_t bssRVA = (rawDataEnd + 0xFFF) & ~0xFFF;
+    if (heapAreaRVA != bssRVA) {
+        int32_t bssDelta = (int32_t)(bssRVA - heapAreaRVA);
+        for (auto& hf : heapFixups) {
+            if (hf.targetRVA == heapAreaRVA) {
+                hf.targetRVA += bssDelta;
+            }
+        }
+        heapAreaRVA = bssRVA;
+    }
+
     // Patch heap fixups
     for (auto& hf : heapFixups) {
         int64_t disp = (int64_t)hf.targetRVA - (int64_t)(textRVA + hf.codePos + 4);
@@ -1193,6 +1350,15 @@ void Codegen::buildPE(const std::string& outputPath) {
         code[hf.codePos + 1] = (uint8_t)((disp >> 8) & 0xFF);
         code[hf.codePos + 2] = (uint8_t)((disp >> 16) & 0xFF);
         code[hf.codePos + 3] = (uint8_t)((disp >> 24) & 0xFF);
+    }
+
+    // Patch user global fixups
+    for (auto& gf : globalFixups) {
+        int64_t disp = (int64_t)gf.targetRVA - (int64_t)(textRVA + gf.codePos + 4);
+        code[gf.codePos]     = (uint8_t)(disp & 0xFF);
+        code[gf.codePos + 1] = (uint8_t)((disp >> 8) & 0xFF);
+        code[gf.codePos + 2] = (uint8_t)((disp >> 16) & 0xFF);
+        code[gf.codePos + 3] = (uint8_t)((disp >> 24) & 0xFF);
     }
 
     uint32_t textSize = (uint32_t)code.size();
@@ -1221,22 +1387,6 @@ void Codegen::buildPE(const std::string& outputPath) {
     IMAGE_FILE_HEADER coff;
     IMAGE_OPTIONAL_HEADER64 opt = {};
 
-    // Heap area resides in .bss (zero bytes on disk, zero-initialized in memory)
-    uint32_t rawDataEnd = dataRVA + dataSize;
-    uint32_t bssSize = 64 * 1024;
-    uint32_t bssRVA = (rawDataEnd + 0xFFF) & ~0xFFF;
-
-    // Snap heapAreaRVA to .bss start and adjust fixups
-    if (heapAreaRVA != bssRVA) {
-        int32_t bssDelta = (int32_t)(bssRVA - heapAreaRVA);
-        for (auto& hf : heapFixups) {
-            if (hf.targetRVA == heapAreaRVA) {
-                hf.targetRVA += bssDelta;
-            }
-        }
-        heapAreaRVA = bssRVA;
-    }
-
     coff.Machine = 0x8664;
     coff.NumberOfSections = 4;
     coff.SizeOfOptionalHeader = sizeof(opt);
@@ -1255,6 +1405,8 @@ void Codegen::buildPE(const std::string& outputPath) {
             coff.Characteristics = 0x0022; // EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
         }
     }
+
+    opt.NumberOfRvaAndSizes = 16;
 
     opt.SizeOfCode = textRawSize;
     opt.SizeOfInitializedData = rdataRawSize + dataRawSize;
@@ -1350,6 +1502,7 @@ void Codegen::buildPE(const std::string& outputPath) {
     f.write((const char*)data.data(), data.size());
     for (uint32_t i = data.size(); i < dataRawSize; i++) f.put(0);
 
+    f.write((const char*)kZenithMagic, 6);
     f.close();
     std::cout << "Compiled: " << outputPath << " (" << textSize << " B code)\n";
 }
@@ -1358,7 +1511,20 @@ void Codegen::buildPE(const std::string& outputPath) {
 
 void Codegen::emitDllEntryPoint() {
     entryPointCodeOffset = code.size();
-    // DllMain(hinstDLL, fdwReason, lpvReserved)
+    // DllMain(hinstDLL, fdwReason, lpvReserved) — rcx, rdx, r8
+    // Run global initializers once, on DLL_PROCESS_ATTACH (fdwReason == 1).
+    emit8(0x83); emit8(0xFA); emit8(0x01);  // cmp edx, 1
+    emit8(0x0F); emit8(0x85);               // jne skipInit (near)
+    int jnePos = (int)code.size();
+    emit32(0);
+    emitGlobalInit();
+    int skipInit = newLabel();
+    emitLabel(skipInit);
+    int32_t disp = (int32_t)(code.size() - (jnePos + 4));
+    code[jnePos]     = (uint8_t)(disp & 0xFF);
+    code[jnePos + 1] = (uint8_t)((disp >> 8) & 0xFF);
+    code[jnePos + 2] = (uint8_t)((disp >> 16) & 0xFF);
+    code[jnePos + 3] = (uint8_t)((disp >> 24) & 0xFF);
     // return TRUE (1) — x64 uses caller-managed stack, plain ret
     emit8(0x33); emit8(0xC0);  // xor eax, eax
     emit8(0xFF); emit8(0xC0);  // inc eax
@@ -1445,8 +1611,10 @@ void Codegen::emitEmbeddedLoader() {
         emit8(0xB9); emit32(520);
         emit8(0x48); emit8(0x8D); emit8(0x15);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "GetTempPathA", "kernel32.dll"});
@@ -1455,13 +1623,17 @@ void Codegen::emitEmbeddedLoader() {
         // 2. lstrcatA(fullPath, "\\dllName")
         emit8(0x48); emit8(0x8D); emit8(0x0D);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0x48); emit8(0x8D); emit8(0x15);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)emb.dllPathStrRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, true});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "lstrcatA", "kernel32.dll"});
@@ -1470,8 +1642,10 @@ void Codegen::emitEmbeddedLoader() {
         // 3. CreateFileA(fullPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL)
         emit8(0x48); emit8(0x8D); emit8(0x0D);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xBA); emit32(0x40000000);        // mov edx, GENERIC_WRITE
         emit8(0x45); emit8(0x31); emit8(0xC0);  // xor r8d, r8d
@@ -1492,23 +1666,29 @@ void Codegen::emitEmbeddedLoader() {
         // Save hFile: mov [rip+hFile], rax
         emit8(0x48); emit8(0x89); emit8(0x05);
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedHFileRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
 
         // 4. WriteFile(hFile, dllData, dllSize, &written, NULL)
         emit8(0x48); emit8(0x89); emit8(0xC1);  // mov rcx, rax (hFile)
         emit8(0x48); emit8(0x8D); emit8(0x15);  // lea rdx, [rip+blob]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)emb.blobRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0x41); emit8(0xB8);                // mov r8d, imm32 (blobSize)
         emit32(emb.blobSize);
         emit8(0x4C); emit8(0x8D); emit8(0x0D);  // lea r9, [rip+written]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedWrittenRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0x48); emit8(0xC7); emit8(0x44); emit8(0x24); emit8(0x20);
         emit32(0);  // [rsp+0x20] = NULL
@@ -1519,8 +1699,10 @@ void Codegen::emitEmbeddedLoader() {
         // 5. CloseHandle(hFile)
         emit8(0x48); emit8(0x8B); emit8(0x0D);  // mov rcx, [rip+hFile]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedHFileRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "CloseHandle", "kernel32.dll"});
@@ -1529,8 +1711,10 @@ void Codegen::emitEmbeddedLoader() {
         // 6. LoadLibraryA(fullPath)
         emit8(0x48); emit8(0x8D); emit8(0x0D);  // lea rcx, [rip+fullPath]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "LoadLibraryA", "kernel32.dll"});
@@ -1538,8 +1722,10 @@ void Codegen::emitEmbeddedLoader() {
         // Save hModule
         emit8(0x48); emit8(0x89); emit8(0x05);  // mov [rip+hModule], rax
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedHModuleRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
 
         // 7. GetProcAddress(hModule, "funcName") for each function
@@ -1547,14 +1733,18 @@ void Codegen::emitEmbeddedLoader() {
             // mov rcx, [rip+hModule]
             emit8(0x48); emit8(0x8B); emit8(0x0D);
             {
+                size_t fp = code.size();
                 int64_t d = (int64_t)embeddedHModuleRVA - (int64_t)(textRVA + code.size() + 4);
                 emit32((uint32_t)d);
+                embeddedLEAFixups.push_back({fp, false});
             }
             // lea rdx, [rip+funcName]
             emit8(0x48); emit8(0x8D); emit8(0x15);
             {
+                size_t fp = code.size();
                 int64_t d = (int64_t)emb.funcNameRVAs[f] - (int64_t)(textRVA + code.size() + 4);
                 emit32((uint32_t)d);
+                embeddedLEAFixups.push_back({fp, true});
             }
             emit8(0xFF); emit8(0x15);
             importCallFixups.push_back({code.size(), "GetProcAddress", "kernel32.dll"});
@@ -1562,16 +1752,20 @@ void Codegen::emitEmbeddedLoader() {
             // Store result: mov [rip+funcSlot], rax
             emit8(0x48); emit8(0x89); emit8(0x05);
             {
+                size_t fp = code.size();
                 int64_t d = (int64_t)emb.funcPtrRVAs[f] - (int64_t)(textRVA + code.size() + 4);
                 emit32((uint32_t)d);
+                embeddedLEAFixups.push_back({fp, false});
             }
         }
 
         // 8. DeleteFileA(fullPath)
         emit8(0x48); emit8(0x8D); emit8(0x0D);  // lea rcx, [rip+fullPath]
         {
+            size_t fp = code.size();
             int64_t d = (int64_t)embeddedFullPathRVA - (int64_t)(textRVA + code.size() + 4);
             emit32((uint32_t)d);
+            embeddedLEAFixups.push_back({fp, false});
         }
         emit8(0xFF); emit8(0x15);
         importCallFixups.push_back({code.size(), "DeleteFileA", "kernel32.dll"});
@@ -1582,6 +1776,8 @@ void Codegen::emitEmbeddedLoader() {
 // ============== Win64 WinAPI Calling Convention Helper ==============
 
 void Codegen::emitWin64WinAPI(int x64Convention, bool isFloat, const std::vector<std::pair<Type,int>>& args, int stackBytes) {
+    (void)x64Convention;
+    (void)isFloat;
     // Emit a Win64 API call with the given arguments.
     // x64Convention: 0 = __stdcall (default for Win64), 1 = __cdecl
     // isFloat: true if the return value is a float (returned in xmm0)

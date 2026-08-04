@@ -6,6 +6,10 @@
 #include <unordered_map>
 #include <filesystem>
 
+// 6-byte marker appended to every compiled binary so Zenith output can be
+// recognized (trailing bytes are ignored by loaders, so execution is unchanged).
+static constexpr uint8_t kZenithMagic[6] = { 'Z', 'e', 'n', 'i', 't', 'h' };
+
 struct StructLayout {
     std::string name;
     int totalSize;
@@ -16,6 +20,7 @@ struct StructLayout {
 struct VarInfo {
     int offset;
     Type type;
+    bool isGlobal = false;
 };
 
 class Codegen {
@@ -40,13 +45,20 @@ public:
     void emitDX11Present();
     void emitDX11Cleanup();
 
+    // ===== codegen_dx11_shaders.cpp =====
+    bool tryDX11Call(CallExpr* call, int& resultReg);
+    bool tryEFICall(CallExpr* call, int& resultReg);
+    bool tryBIOSCall(CallExpr* call, int& resultReg);
+    int ensureString(const std::string& s);
+
     // ===== codegen_sw.cpp =====
     void emitSWInit();
     void emitSWPresent();
     void emitSWCleanup();
 
-private:
     void emit8(uint8_t b);
+
+private:
     void emit16(uint16_t v);
     void emit32(uint32_t v);
     void emit64(uint64_t v);
@@ -66,9 +78,12 @@ private:
     void emitLoadRegFromBP64(int r, int offset);
     void emitStoreToBP64(int offset);
 
-    void emitAdd(int dst, int src);
-    void emitSub(int dst, int src);
-    void emitImul(int dst, int src);
+void emitAdd(int dst, int src);
+void emitSub(int dst, int src);
+void emitImul(int dst, int src);
+void emitAnd(int dst, int src);
+void emitOr(int dst, int src);
+void emitXor(int dst, int src);
 
     void emitMovssXmm(int xmmDst, int xmmSrc);
     void emitMovssXmmFromMem(int xmmDst, int gpReg, int offset);
@@ -90,23 +105,45 @@ private:
     void emitJmp(int label);
     void emitJcc(const std::string& cond, int label);
 
+    std::vector<int> breakLabelStack;
+    std::vector<int> continueLabelStack;
+
     bool isFloatExpr(Expr* expr);
 
     void emitEntryPoint();
     void emitFunction(FunctionDecl* func);
     int emitExpr(Expr* expr);
+    int emitUnaryExpr(UnaryExpr* u);
+    int emitExprKeepAlive(Expr* expr, int& keepReg);
+    int emitExprKeepAliveR10(Expr* expr);
+    int emitFloatExprKeepAliveR10(Expr* expr);
     void emitStmt(Stmt* stmt, const Type* stmtType = nullptr);
+    void emitAsmInstr(const AsmInstr& instr);
+    int asmRegIndex(const std::string& name) const;
     int emitFloatExpr(Expr* expr);
     int emitBinaryExpr(BinaryExpr* bin, bool isFloat);
     void emitFloatStoreToBP(int xmm, int offset);
     void emitFloatLoadFromBP(int xmm, int offset);
     void emitLeaR10FromBP(int offset);
+    void emitLeaRegFromBP(int r, int offset);
     void emitLoadFromAddr(int gpDst, int addrReg, int offset);
     void emitStoreToAddr(int gpSrc, int addrReg, int offset);
     void emitLoadQwordDisp8(int dstReg, int baseReg, int disp);
     void emitStoreQwordDisp8(int srcReg, int baseReg, int disp);
     void emitIncQwordDisp8(int baseReg, int disp);
     void emitMovQwordDisp8Imm32(int baseReg, int disp, int32_t imm);
+
+    // RIP-relative access to user global variables (.data section)
+    void emitGlobalLoadReg(int r, int offset);
+    void emitGlobalLoadReg32(int r, int offset);
+    void emitGlobalStoreReg64(int offset);
+    void emitGlobalStoreReg32(int offset);
+    void emitGlobalLeaReg(int r, int offset);
+    void emitGlobalLeaR10(int offset);
+    void emitGlobalFloatLoad(int xmm, int offset);
+    void emitGlobalFloatStore(int xmm, int offset);
+    void populateGlobalVarInfos();
+    void emitGlobalInit();
 
     void spillRegs();
     void reloadRegs();
@@ -118,6 +155,9 @@ private:
     struct JmpFixup { size_t codePos; int targetPos; };
     struct StrFixup { size_t codePos; int stringIndex; };
     struct ImportCallFixup { size_t codePos; std::string funcName; std::string dllName; };
+    struct GlobalFixup { size_t codePos; uint32_t targetRVA; };
+    struct EmbeddedLEAFixup { size_t codePos; bool isRdata; };
+    std::vector<EmbeddedLEAFixup> embeddedLEAFixups;
     std::vector<CallFixup> callFixups;
     std::vector<FuncRefFixup> funcRefFixups;
     std::vector<JmpFixup> jmpFixups;
@@ -174,10 +214,17 @@ private:
     uint32_t heapOffsetRVA = 0xFFFFFD00;
     uint32_t heapFreeHeadRVA = 0xFFFFFE00;
     uint32_t heapAreaRVA = 0xFFFFFF00;
+    uint32_t randSeedRVA = 0;
     uint32_t win32GlobalsRVA = 0;
+
+    std::vector<GlobalFixup> globalFixups;
+    uint32_t globalsRVA = 0;
+    int globalsSize = 0;
+    std::unordered_map<std::string, int> globalOffsets;
 
     size_t wndProcOffset = 0;
     uint32_t classNameRVA = 0;
+    uint32_t fontRVA = 0;      // 5x7 font blob in .rdata (GUI tool apps)
     void emitWndProc();
 
     uint32_t iatRVA = 0;
@@ -227,7 +274,7 @@ private:
     void readEmbeddedLibs();
     void emitEmbeddedLoader();
 
-    uint32_t importDescCount = 1;
+    uint32_t importDescCount = 0;
     uint32_t importDataSize = 0;
 
     std::filesystem::path compilerDir;
