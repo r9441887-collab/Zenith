@@ -1094,7 +1094,15 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
         int statusReg = emitExpr(call->args[0].get());
         if (statusReg != 0) { emitMovReg(0, statusReg); freeReg(statusReg); }
         else freeReg(0);
-        emit8(0xC9);  // leave
+        if (frameSize > 0) {
+            if (frameSize <= 127) {
+                emit8(0x48); emit8(0x83); emit8(0xC4); emit8((uint8_t)frameSize);
+            } else {
+                emit8(0x48); emit8(0x81); emit8(0xC4); emit32((uint32_t)frameSize);
+            }
+        }
+        emit8(0x5B);  // pop rbx
+        emit8(0x5D);  // pop rbp
         emit8(0xC3);  // ret
         regsUsed = 1;
         resultReg = 0;
@@ -1117,15 +1125,33 @@ bool Codegen::tryBuiltinCall(CallExpr* call, int& resultReg) {
 
         int loopLabel = newLabel();
         int endLabel = newLabel();
+        int oneByteLabel = newLabel();
+        int storeLabel = newLabel();
         emitLabel(loopLabel);
-        emit8(0x8A); emit8(0x06); // mov al, [rsi]
+        emit8(0x0F); emit8(0xB6); emit8(0x06); // movzx eax, byte [rsi]
         emit8(0x84); emit8(0xC0); // test al, al
         emitJcc("e", endLabel);
-        emit8(0x66); emit8(0x89); emit8(0x07); // mov [rdi], ax
+        emit8(0x3C); emit8(0xC0); // cmp al, 0xC0
+        emitJcc("<", oneByteLabel);
+        emit8(0x3C); emit8(0xE0); // cmp al, 0xE0
+        emitJcc(">=", oneByteLabel);
+        // Two-byte UTF-8: cp = ((b1 & 0x1F) << 6) | (b2 & 0x3F)
+        emit8(0x0F); emit8(0xB6); emit8(0x06); // movzx eax, byte [rsi]
+        emit8(0xC1); emit8(0xE0); emit8(0x06); // shl eax, 6
+        emit8(0x25); emit32(0x7C0); // and eax, 0x7C0
+        emit8(0x0F); emit8(0xB6); emit8(0x56); emit8(0x01); // movzx edx, byte [rsi+1]
+        emit8(0x83); emit8(0xE2); emit8(0x3F); // and edx, 0x3F
+        emit8(0x09); emit8(0xD0); // or eax, edx
+        emit8(0x48); emit8(0x83); emit8(0xC6); emit8(0x02); // add rsi, 2
+        emitJmp(storeLabel);
+        emitLabel(oneByteLabel);
+        emit8(0x0F); emit8(0xB6); emit8(0x06); // movzx eax, byte [rsi]
         emit8(0x48); emit8(0xFF); emit8(0xC6); // inc rsi
+        emitLabel(storeLabel);
+        emit8(0x66); emit8(0x89); emit8(0x07); // mov [rdi], ax
         emit8(0x48); emit8(0x83); emit8(0xC7); emit8(0x02); // add rdi, 2
         emit8(0x48); emit8(0xFF); emit8(0xC9); // dec rcx
-        emitJcc("ne", loopLabel);
+        emitJcc("!=", loopLabel);
 
         emitLabel(endLabel);
         emit8(0x66); emit8(0xC7); emit8(0x07); emit16(0); // mov word ptr [rdi], 0

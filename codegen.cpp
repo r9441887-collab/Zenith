@@ -3606,6 +3606,124 @@ void Codegen::emitEntryPoint() {
         heapFixups.push_back({code.size(), win32GlobalsRVA + 8});
         emit32(0);
 
+        // ================================================================
+        // Query EFI_GRAPHICS_OUTPUT_PROTOCOL and cache the framebuffer info
+        // into win32Globals+24..+48 (layout mirrors the 0x8000 struct that the
+        // gop_*/fb_* builtins read). Until this runs the values are all zero.
+        //   BootServices = [SystemTable + 0x60]
+        //   LocateProtocol = [BootServices + 0x140]
+        //   GUID {9042A9DE-23DC-4A38-96FB-7ADED080516A}
+        // ================================================================
+        // rax = SystemTable
+        emit8(0x48); emit8(0x8B); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 8});
+        emit32(0);
+        // r10 = BootServices = [rax + 0x60] (volatile; only alive until the call)
+        emit8(0x4C); emit8(0x8B); emit8(0x50); emit8(0x60);
+        // sub rsp, 0x20 (shadow space for the call)
+        emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x20);
+        // rcx = &GOP_GUID (RIP-relative; displacement patched below)
+        size_t gopGuidLeaPos = code.size();
+        emit8(0x48); emit8(0x8D); emit8(0x0D); emit32(0);
+        // rdx = NULL (Registration)
+        emit8(0x33); emit8(0xD2);
+        // r8 = &win32Globals+16 (out: GOP interface pointer)
+        emit8(0x4C); emit8(0x8D); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 16});
+        emit32(0);
+        // call BootServices->LocateProtocol (r10 = BootServices, loaded above)
+        emit8(0x41); emit8(0xFF); emit8(0x92); emit8(0x40); emit8(0x01); emit8(0x00); emit8(0x00);
+        emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x20);   // add rsp, 0x20
+
+        // If LocateProtocol failed (eax != EFI_SUCCESS) the info stays zero.
+        int gopNoProtocol = newLabel();
+        emit8(0x85); emit8(0xC0);              // test eax, eax
+        emitJcc("!=", gopNoProtocol);
+
+        // ================================================================
+        // Activate the current GOP mode via GOP->SetMode(Mode->Mode).
+        // The framebuffer is only scanned out by the hardware after the
+        // mode is set; without this call QEMU's stdvga stays in its default
+        // text mode and writes to the linear framebuffer are never visible.
+        //   GOP interface            = win32Globals+16
+        //   SetMode                  = [GOP + 0x08]
+        //   Mode->Mode (mode number) = [[GOP + 0x18] + 0x04]
+        // ================================================================
+        emit8(0x4C); emit8(0x8B); emit8(0x05);              // mov r8, [rip+disp] = GOP
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 16});
+        emit32(0);
+        emit8(0x49); emit8(0x8B); emit8(0x50); emit8(0x18); // rdx = [r8 + 0x18] = GOP->Mode
+        emit8(0x8B); emit8(0x52); emit8(0x04);              // edx = [rdx + 0x04] = Mode->Mode
+        emit8(0x4C); emit8(0x89); emit8(0xC1);              // rcx = r8 (This)
+        emit8(0x48); emit8(0x83); emit8(0xEC); emit8(0x20); // sub rsp, 0x20 (shadow space)
+        emit8(0x41); emit8(0xFF); emit8(0x50); emit8(0x08); // call [r8 + 0x08] = SetMode
+        emit8(0x48); emit8(0x83); emit8(0xC4); emit8(0x20); // add rsp, 0x20
+
+        // rax = GOP interface
+        emit8(0x48); emit8(0x8B); emit8(0x05);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 16});
+        emit32(0);
+        // rdx = GOP->Mode = [rax + 0x18]
+        // (EFI_GRAPHICS_OUTPUT_PROTOCOL = {QueryMode, SetMode, Blt, Mode})
+        emit8(0x48); emit8(0x8B); emit8(0x50); emit8(0x18);
+        // rax = Mode->Info = [rdx + 0x08]
+        emit8(0x48); emit8(0x8B); emit8(0x42); emit8(0x08);
+        // win32Globals+24 = Mode->FrameBufferBase = [rdx + 0x18]
+        emit8(0x48); emit8(0x8B); emit8(0x4A); emit8(0x18);  // rcx = FrameBufferBase
+        emit8(0x48); emit8(0x89); emit8(0x0D);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 24});
+        emit32(0);
+        // win32Globals+32 = Pitch in bytes = PixelsPerScanLine * (BPP/8).
+        // Some GOP drivers (e.g. OVMF stdvga) leave PixelsPerScanLine = 0, in
+        // which case we fall back to HorizontalResolution. BPP is 32 for the
+        // pixel formats we support (PixelFormat 0/1), so x4 (shl ecx, 2).
+        emit8(0x8B); emit8(0x48); emit8(0x10);              // ecx = PixelsPerScanLine
+        int pitchUseWidth = newLabel();
+        emit8(0x85); emit8(0xC9);                           // test ecx, ecx
+        emitJcc("!=", pitchUseWidth);
+        emit8(0x8B); emit8(0x48); emit8(0x04);              // ecx = HorizontalResolution
+        emitLabel(pitchUseWidth);
+        emit8(0xC1); emit8(0xE1); emit8(0x02);              // shl ecx, 2 (x4 bytes/px)
+        emit8(0x89); emit8(0x0D);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 32});
+        emit32(0);
+        // win32Globals+36 = Info->HorizontalResolution = [rax + 0x04]
+        emit8(0x8B); emit8(0x48); emit8(0x04);
+        emit8(0x89); emit8(0x0D);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 36});
+        emit32(0);
+        // win32Globals+40 = Info->VerticalResolution = [rax + 0x08]
+        emit8(0x8B); emit8(0x48); emit8(0x08);
+        emit8(0x89); emit8(0x0D);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 40});
+        emit32(0);
+        // win32Globals+48 = Info->PixelFormat = [rax + 0x0C]
+        emit8(0x8B); emit8(0x48); emit8(0x0C);
+        emit8(0x89); emit8(0x0D);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 48});
+        emit32(0);
+        // win32Globals+44 = BPP = (PixelFormat < 2) ? 32 : 0
+        // (ecx still holds Info->PixelFormat from the store above)
+        emit8(0x33); emit8(0xD2);              // xor edx, edx
+        emit8(0x83); emit8(0xF9); emit8(0x02); // cmp ecx, 2
+        emit8(0x0F); emit8(0x9C); emit8(0xC2); // setl dl
+        emit8(0xC1); emit8(0xE2); emit8(0x05); // shl edx, 5
+        emit8(0x89); emit8(0x15);
+        heapFixups.push_back({code.size(), win32GlobalsRVA + 44});
+        emit32(0);
+
+        emitLabel(gopNoProtocol);
+
+        // GOP GUID blob lives in the code stream after this entry point's `ret`.
+        // Patch the lea displacement now that we know the final layout position.
+        {
+            static const uint8_t efiGopGuid[16] = {
+                0xDE, 0xA9, 0x42, 0x90, 0xDC, 0x23, 0x38, 0x4A,
+                0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A
+            };
+            gopGuidBlob.assign(efiGopGuid, efiGopGuid + 16);
+        }
+
         emitGlobalInit();
 
         bool hasMain = funcOffsets.count("main") > 0;
@@ -3625,6 +3743,19 @@ void Codegen::emitEntryPoint() {
         emit8(0x33); emit8(0xC0);  // xor eax, eax
         emit8(0xC9);  // leave
         emit8(0xC3);  // ret
+
+        // Append the GOP GUID blob right after the entry point and fix the
+        // lea displacement emitted above (text section never moves, so the
+        // RIP-relative offset is stable).
+        if (!gopGuidBlob.empty()) {
+            size_t blobPos = code.size();
+            int32_t disp = (int32_t)(blobPos - (gopGuidLeaPos + 7));
+            code[gopGuidLeaPos + 3] = (uint8_t)(disp & 0xFF);
+            code[gopGuidLeaPos + 4] = (uint8_t)((disp >> 8) & 0xFF);
+            code[gopGuidLeaPos + 5] = (uint8_t)((disp >> 16) & 0xFF);
+            code[gopGuidLeaPos + 6] = (uint8_t)((disp >> 24) & 0xFF);
+            code.insert(code.end(), gopGuidBlob.begin(), gopGuidBlob.end());
+        }
         return;
     }
 
@@ -3769,11 +3900,7 @@ void Codegen::generateWide(const std::wstring& outputPath) {
         std::string narrowOut(ulen > 0 ? ulen - 1 : 0, '\0');
         if (ulen > 1) WideCharToMultiByte(0 /*CP_ACP*/, 0, outputPath.c_str(), -1, &narrowOut[0], ulen, NULL, NULL);
         if (prog.appType == AppType::Bare) {
-            std::ofstream rf(narrowOut, std::ios::binary);
-            rf.write((const char*)code.data(), code.size());
-            rf.write((const char*)kZenithMagic, 6);
-            rf.close();
-            std::cout << "Compiled raw: " << narrowOut << " (" << code.size() << " B)\n";
+            writeBareFlatImage(narrowOut);
         } else {
             buildPE(narrowOut);
         }

@@ -2,6 +2,7 @@
 #include "ast.h"
 #include "parser.h"
 #include "font5x7.h"
+#include "font8x16_cyr.h"
 #include <iostream>
 #include <fstream>
 #include <cstring>
@@ -462,6 +463,9 @@ void Codegen::fixupSectionRVAs() {
     if (prog.appType == AppType::GUI) {
         classNameRVA += dRdata;
         fontRVA += dRdata;
+    }
+    if (prog.appType == AppType::EFI) {
+        fontCyrRVA += dRdata;
     }
     heapOffsetRVA += dData;
     heapFreeHeadRVA += dData;
@@ -1158,6 +1162,16 @@ void Codegen::buildImportData() {
         while (newRdata.size() % 16 != 0) newRdata.push_back(0);
     }
 
+    // 8x16 Cyrillic font blob (EFI only) — 162 glyphs * 16 rows, used by gop_print()
+    if (prog.appType == AppType::EFI) {
+        fontCyrRVA = rdataRVA + (uint32_t)newRdata.size();
+        for (int g = 0; g < 162; g++) {
+            for (int r = 0; r < 16; r++)
+                newRdata.push_back(font8x16_cyr[g][r]);
+        }
+        while (newRdata.size() % 16 != 0) newRdata.push_back(0);
+    }
+
     rdata = std::move(newRdata);
 
     // === EMBEDDED DLL: rdata entries (DLL path strings, function name strings) ===
@@ -1195,10 +1209,19 @@ void Codegen::buildImportData() {
             for (int k = 0; k < 56; k++) data.push_back(0);
         }
     } else if (prog.appType == AppType::EFI) {
-        // EFI globals: ImageHandle (8) + SystemTable (8)
-        // Populated by the EFI entry point from the EfiMain parameters.
+        // EFI globals: ImageHandle (8) + SystemTable (8) + GOP info.
+        // ImageHandle/SystemTable are populated by the EFI entry point from the
+        // EfiMain parameters; the GOP info (+24..+48) is filled in by querying
+        // the EFI_GRAPHICS_OUTPUT_PROTOCOL at startup (see emitEntryPoint).
+        // Layout mirrors the fixed addresses used by bare-metal loaders:
+        //   +24 = FrameBufferBase (u64)   == 0x8000
+        //   +32 = Pitch (u32)             == 0x8008
+        //   +36 = Width (u32)             == 0x800C
+        //   +40 = Height (u32)            == 0x8010
+        //   +44 = BPP (u32)               == 0x8014
+        //   +48 = PixelFormat (u32)       == 0x8018
         win32GlobalsRVA = dataRVA + (uint32_t)data.size();
-        for (int k = 0; k < 16; k++) data.push_back(0);
+        for (int k = 0; k < 56; k++) data.push_back(0);
     }
 
     // === EMBEDDED DLL: .data entries ===
@@ -1505,6 +1528,93 @@ void Codegen::buildPE(const std::string& outputPath) {
     f.write((const char*)kZenithMagic, 6);
     f.close();
     std::cout << "Compiled: " << outputPath << " (" << textSize << " B code)\n";
+}
+
+// ============== Flat Raw Builder (app bare) ==============
+// Produces a flat binary meant to be loaded at 0x100000 by a custom BIOS loader:
+//   [code][pad to 16][string pool][pad to 16][win32 globals (56B)][user globals]
+//   [heap offset (8)][heap free head (8)][rand seed (8)][heap area (64 KiB)]
+//   [u32 entry offset]["Zenith"]
+// RIP-relative fixups are patched as if the image base were 0 (file offset == RVA).
+void Codegen::writeBareFlatImage(const std::string& path) {
+    // Build the string pool into a flat .rdata blob.
+    stringOffsets.clear();
+    std::vector<uint8_t> flatRdata;
+    uint32_t flatRdataRVA = (uint32_t)code.size();
+    for (auto& s : stringPool) {
+        stringOffsets.push_back((uint32_t)flatRdata.size());
+        for (char c : s) flatRdata.push_back((uint8_t)c);
+        flatRdata.push_back(0);
+    }
+    while (flatRdata.size() % 16 != 0) flatRdata.push_back(0);
+    uint32_t flatStringRVA = flatRdataRVA;
+
+    // Flat .data blob: win32 globals + user globals + heap allocator state + reserved heap area.
+    std::vector<uint8_t> flatData;
+    uint32_t flatDataRVA = flatRdataRVA + (uint32_t)flatRdata.size();
+
+    uint32_t flatWin32Globals = flatDataRVA + (uint32_t)flatData.size();
+    for (int k = 0; k < 56; k++) flatData.push_back(0);
+
+    uint32_t flatGlobals = flatDataRVA + (uint32_t)flatData.size();
+    for (int k = 0; k < globalsSize; k++) flatData.push_back(0);
+
+    uint32_t flatHeapOffset = flatDataRVA + (uint32_t)flatData.size();
+    for (int k = 0; k < 8; k++) flatData.push_back(0);
+    uint32_t flatHeapFreeHead = flatDataRVA + (uint32_t)flatData.size();
+    for (int k = 0; k < 8; k++) flatData.push_back(0);
+    uint32_t flatRandSeed = flatDataRVA + (uint32_t)flatData.size();
+    for (int k = 0; k < 8; k++) flatData.push_back(0);
+    uint32_t flatHeapArea = flatDataRVA + (uint32_t)flatData.size();
+    for (int k = 0; k < 0x10000; k++) flatData.push_back(0);
+
+    // Patch RIP-relative fixups (image base = 0: disp = target - (codePos + 4)).
+    auto patchDisp = [&](size_t codePos, uint32_t targetRVA) {
+        int64_t disp = (int64_t)targetRVA - (int64_t)(codePos + 4);
+        code[codePos]     = (uint8_t)(disp & 0xFF);
+        code[codePos + 1] = (uint8_t)((disp >> 8) & 0xFF);
+        code[codePos + 2] = (uint8_t)((disp >> 16) & 0xFF);
+        code[codePos + 3] = (uint8_t)((disp >> 24) & 0xFF);
+    };
+
+    for (auto& sf : strFixups) {
+        if (sf.stringIndex < 0 || sf.stringIndex >= (int)stringOffsets.size()) continue;
+        patchDisp(sf.codePos, flatStringRVA + stringOffsets[sf.stringIndex]);
+    }
+
+    // buildImportData/fixupSectionRVAs already replaced the heap sentinels with the
+    // (PE-layout) addresses, so re-map by comparing against those known addresses.
+    for (auto& hf : heapFixups) {
+        uint32_t t = hf.targetRVA;
+        uint32_t flat;
+        if (globalsSize > 0 && t >= globalsRVA && t < globalsRVA + (uint32_t)globalsSize) flat = flatGlobals + (t - globalsRVA);
+        else if (t == heapAreaRVA) flat = flatHeapArea;
+        else if (t == heapOffsetRVA) flat = flatHeapOffset;
+        else if (t == heapFreeHeadRVA) flat = flatHeapFreeHead;
+        else if (t == randSeedRVA) flat = flatRandSeed;
+        else if (win32GlobalsRVA != 0 && t >= win32GlobalsRVA && t < win32GlobalsRVA + 56) flat = flatWin32Globals + (t - win32GlobalsRVA);
+        else if (t < 56) flat = flatWin32Globals + t;  // bare: win32GlobalsRVA stays 0
+        else flat = t;
+        patchDisp(hf.codePos, flat);
+    }
+
+    for (auto& gf : globalFixups) {
+        uint32_t off = (globalsRVA != 0) ? (gf.targetRVA - globalsRVA) : gf.targetRVA;
+        patchDisp(gf.codePos, flatGlobals + off);
+    }
+
+    // Write flat image + trailer: [entry offset u32]["Zenith"].
+    std::ofstream f(path, std::ios::binary);
+    f.write((const char*)code.data(), code.size());
+    f.write((const char*)flatRdata.data(), flatRdata.size());
+    f.write((const char*)flatData.data(), flatData.size());
+    uint32_t entryOfs = (uint32_t)entryPointCodeOffset;
+    f.write((const char*)&entryOfs, 4);
+    f.write((const char*)kZenithMagic, 6);
+    f.close();
+    std::cout << "Compiled raw: " << path << " (" << code.size() << " B code, "
+              << (code.size() + flatRdata.size() + flatData.size() + 10) << " B total, entry +0x"
+              << std::hex << entryOfs << std::dec << ")\n";
 }
 
 // ============== DLL Entry Point ==============

@@ -133,6 +133,14 @@ void emitXor(int dst, int src);
     void emitIncQwordDisp8(int baseReg, int disp);
     void emitMovQwordDisp8Imm32(int baseReg, int disp, int32_t imm);
 
+    // Framebuffer info access for gop_*/fb_* builtins (codegen_efi.cpp).
+    // For EFI apps the info lives in win32Globals (populated from the GOP
+    // protocol at startup); for Bare apps it is read from the fixed loader
+    // addresses 0x8000..0x8018. `field` matches the fixed-address offset.
+    void emitLoadFbInfo64(int r, int field);
+    void emitLoadFbInfo32(int r, int field);
+    void emitImulFbInfo32(int r, int field);
+
     // RIP-relative access to user global variables (.data section)
     void emitGlobalLoadReg(int r, int offset);
     void emitGlobalLoadReg32(int r, int offset);
@@ -189,6 +197,7 @@ void emitXor(int dst, int src);
     uint32_t exportDirSize = 0;
 
     void buildPE(const std::string& path);
+    void writeBareFlatImage(const std::string& path);
 
     Program& prog;
     std::vector<uint8_t> code;
@@ -222,9 +231,12 @@ void emitXor(int dst, int src);
     int globalsSize = 0;
     std::unordered_map<std::string, int> globalOffsets;
 
+    std::vector<uint8_t> gopGuidBlob;  // EFI GOP GUID bytes appended after the entry point (EFI apps)
+
     size_t wndProcOffset = 0;
     uint32_t classNameRVA = 0;
     uint32_t fontRVA = 0;      // 5x7 font blob in .rdata (GUI tool apps)
+    uint32_t fontCyrRVA = 0;   // 8x16 Cyrillic font blob in .rdata (EFI gop_print)
     void emitWndProc();
 
     uint32_t iatRVA = 0;
